@@ -190,6 +190,11 @@ def run_bot(discord_token, client_id, client_secret, anthropic_key):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
+    # Debug: show which vars are present (not values)
+    expected = ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET", "ANTHROPIC_API_KEY", "DISCORD_BOT_TOKEN", "STRAVA_REFRESH_TOKEN"]
+    for var in expected:
+        print("ENV {}: {}".format(var, "SET" if os.getenv(var) else "MISSING"))
+
     client_id = os.getenv("STRAVA_CLIENT_ID", "").strip()
     client_secret = os.getenv("STRAVA_CLIENT_SECRET", "").strip()
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
