@@ -393,10 +393,13 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 week_label = datetime.now(WIB).strftime("%-d %b")
                 thread = await msg.create_thread(name=f"Weekly Review — {week_label}")
 
-                # Send full insight inside the thread (no truncation, split at 2000)
+                # Send full insight inside the thread as an embed (4096 char limit, no truncation needed)
                 if insight:
-                    for chunk in [insight[i:i+2000] for i in range(0, len(insight), 2000)]:
-                        await thread.send(chunk)
+                    insight_embed = discord.Embed(
+                        description=insight[:4096],
+                        color=0xFC4C02,
+                    )
+                    await thread.send(embed=insight_embed)
 
                 # Inject summary into thread history so @mentions in thread have context
                 history[thread.id].append({"role": "assistant", "content": summary})
