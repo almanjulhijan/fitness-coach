@@ -599,7 +599,11 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             await msg.channel.send("Hey! Ask me anything about your training.")
             return
 
-        category_name = msg.channel.category.name if msg.channel.category else None
+        if isinstance(msg.channel, discord.Thread):
+            parent = msg.channel.parent
+            category_name = parent.category.name if parent and parent.category else None
+        else:
+            category_name = msg.channel.category.name if msg.channel.category else None
 
         channel_history = history[msg.channel.id]
         channel_history.append({"role": "user", "content": user_text})
