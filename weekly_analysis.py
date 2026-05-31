@@ -446,9 +446,9 @@ def _build_embed(
     weather_insight, tod_analysis, gym_flags, schedule_grid,
     goal_progress, weight_kg, insight,
 ) -> discord.Embed:
+    week_end = week_start + timedelta(days=6)
     now_wib = datetime.now(WIB)
-    is_current_week = week_end.date() >= now_wib.date()
-    display_end = now_wib if is_current_week else week_start + timedelta(days=6)
+    display_end = min(now_wib, week_end)
     title = f"Weekly Review — {week_start.strftime('%-d %b')} – {display_end.strftime('%-d %b')}"
 
     gym_types = [g["classified"]["type"] for g in gym_details]
