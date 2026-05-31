@@ -341,23 +341,28 @@ def _aerobic_goal_progress(enriched_runs: list[dict]) -> int:
 # ── Schedule grid ──────────────────────────────────────────────────────────────
 
 def _build_schedule_grid(gym_sessions: list[dict], enriched_runs: list[dict]) -> str:
-    """Build 7-day schedule grid as a text table."""
+    """Build 7-day schedule as a mobile-friendly bullet list."""
     run_by_day: dict[int, str] = {}
     for r in enriched_runs:
         dist_km = r["activity"].get("distance", 0) / 1000
-        run_by_day[r["day_index"]] = f"🏃{dist_km:.0f}k"
+        run_by_day[r["day_index"]] = f"🏃 {dist_km:.0f}km"
 
     gym_by_day: dict[int, str] = {}
     for g in gym_sessions:
         label = TYPE_LABEL.get(g["classified"]["type"], "??")
-        gym_by_day[g["day_index"]] = f"💪{label}"
+        gym_by_day[g["day_index"]] = f"💪 {label}"
 
-    col_w = 6
-    header = "".join(d.ljust(col_w) for d in DAYS_SHORT)
-    run_row = "".join(run_by_day.get(i, "—").ljust(col_w) for i in range(7))
-    gym_row = "".join(gym_by_day.get(i, "—").ljust(col_w) for i in range(7))
+    lines = []
+    for i, day in enumerate(DAYS_SHORT):
+        parts = []
+        if i in run_by_day:
+            parts.append(run_by_day[i])
+        if i in gym_by_day:
+            parts.append(gym_by_day[i])
+        if parts:
+            lines.append(f"**{day}** — {' · '.join(parts)}")
 
-    return f"```\n{header}\n{run_row}\n{gym_row}\n```"
+    return "\n".join(lines) if lines else "—"
 
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
