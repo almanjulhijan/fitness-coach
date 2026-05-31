@@ -181,84 +181,196 @@ def _generate_insight(prompt: str, claude_client: anthropic.Anthropic) -> str:
         return ""
 
 
-# ── Discord embed builder ───────────────────────────────────────────────────────
+def _generate_goal_alignment(
+    activity: dict,
+    enriched: dict,
+    goals_content: str,
+    claude_client: anthropic.Anthropic,
+) -> list[dict]:
+    """Ask Claude to evaluate this run against the athlete's goals.
 
-def build_embed(activity: dict, enriched: dict, insight: str) -> discord.Embed:
-    sport = activity.get("sport_type") or activity.get("type", "Run")
-    emoji = SPORT_EMOJI.get(sport, "🏅")
+    Returns a list of {"status": "ok"|"warning"|"flag", "text": "..."} dicts.
+    Returns [] on failure or if no goals.
+    """
+    if not goals_content or not goals_content.strip():
+        return []
+
+    import json as _json
+
     dist_km = activity.get("distance", 0) / 1000
     moving = activity.get("moving_time", 0)
     avg_hr = activity.get("average_heartrate")
-    elev = activity.get("total_elevation_gain")
+    hr_zones = enriched.get("hr_zones") or {}
+    training_load = enriched.get("training_load") or {}
+    pace_sec = enriched.get("pace_sec_km")
+
+    activity_summary = [
+        "- Distance: {:.2f} km".format(dist_km),
+        "- Duration: {}".format(_fmt_duration(moving)),
+        "- Pace: {}".format(_fmt_pace(pace_sec) + "/km" if pace_sec else "unknown"),
+        "- Avg HR: {} bpm".format(int(avg_hr)) if avg_hr else "",
+        "- HR zones: {}".format(", ".join("{} {}%".format(z, p) for z, p in hr_zones.items())) if hr_zones else "",
+        "- This week: {} km ({} runs)".format(
+            training_load.get("this_week_km", 0), training_load.get("this_week_runs", 0)
+        ),
+    ]
+    activity_summary = "\n".join(l for l in activity_summary if l)
+
+    prompt = (
+        "Given these training goals and this single run's data, return a JSON array "
+        "of 3-4 goal alignment checks. Each item must have:\n"
+        '- "status": "ok", "warning", or "flag"\n'
+        '- "text": one concise line in Bahasa Indonesia with specific numbers\n\n'
+        "Focus on: easy run HR zone ratio, pace vs goal pace, weekly volume/frequency, "
+        "intensity balance. Be specific with numbers. Return ONLY valid JSON, no prose.\n\n"
+        "## Training Goals\n{}\n\n"
+        "## This Run\n{}"
+    ).format(goals_content, activity_summary)
+
+    try:
+        response = claude_client.messages.create(
+            model=MODEL,
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = "".join(b.text for b in response.content if b.type == "text").strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        checks = _json.loads(raw)
+        if isinstance(checks, list):
+            return checks[:4]
+    except Exception as e:
+        print("Goal alignment generation failed: {}".format(e))
+    return []
+
+
+# ── Recovery estimate ───────────────────────────────────────────────────────────
+
+def _estimate_recovery_hours(hr_zones: dict, decoupling: float | None, moving_secs: int) -> str:
+    """Estimate recovery time based on zone distribution and duration."""
+    z4_plus = hr_zones.get("Zone 4", 0) + hr_zones.get("Zone 5", 0)
+    z3 = hr_zones.get("Zone 3", 0)
+    hours_run = moving_secs / 3600
+
+    if z4_plus > 20:
+        base = 48
+    elif z3 > 50:
+        base = 36
+    else:
+        base = 24
+
+    if hours_run > 1.5:
+        base += 8
+    elif hours_run > 1.0:
+        base += 4
+
+    if decoupling and decoupling > 7:
+        base += 8
+
+    low = max(12, base - 4)
+    high = base + 4
+    return "~{}–{} jam".format(low, high)
+
+
+# ── HR zone display helpers ──────────────────────────────────────────────────────
+
+def _fmt_zones(hr_zones: dict) -> str:
+    """Format zone distribution as 'Zone 2 — 61%  ·  Zone 3 — 30%  ·  Zone 4+ — 9%'."""
+    merged: dict[str, int] = {}
+    for zone, pct in hr_zones.items():
+        if zone in ("Zone 4", "Zone 5"):
+            merged["Zone 4+"] = merged.get("Zone 4+", 0) + pct
+        else:
+            merged[zone] = pct
+
+    order = ["Zone 1", "Zone 2", "Zone 3", "Zone 4+"]
+    parts = []
+    for z in order:
+        if z in merged and merged[z] > 0:
+            parts.append("**{}** — {}%".format(z, merged[z]))
+    return "  ·  ".join(parts)
+
+
+# ── Discord embed builder ───────────────────────────────────────────────────────
+
+def build_embed(activity: dict, enriched: dict, insight: str, goal_checks: list | None = None) -> discord.Embed:
+    sport      = activity.get("sport_type") or activity.get("type", "Run")
+    emoji      = SPORT_EMOJI.get(sport, "🏅")
+    dist_km    = activity.get("distance", 0) / 1000
+    moving     = activity.get("moving_time", 0)
+    avg_hr     = activity.get("average_heartrate")
+    elev       = activity.get("total_elevation_gain")
 
     start_time = datetime.fromisoformat(
         activity["start_date"].replace("Z", "+00:00")
     ).astimezone(WIB)
 
-    weather = enriched.get("weather") or {}
-    aqi_data = enriched.get("aqi") or {}
-    location_name = enriched.get("location_name") or ""
-    time_context = enriched.get("time_context") or ""
-    decoupling = enriched.get("aerobic_decoupling")
-    hr_zones = enriched.get("hr_zones") or {}
-    training_load = enriched.get("training_load") or {}
-    milestones = enriched.get("milestones") or []
-    hr_baseline = enriched.get("hr_baseline")
-    pace_sec = enriched.get("pace_sec_km")
-    adj_pace_sec = enriched.get("adjusted_pace_sec_km")
+    weather        = enriched.get("weather") or {}
+    aqi_data       = enriched.get("aqi") or {}
+    location_name  = enriched.get("location_name") or ""
+    time_context   = enriched.get("time_context") or ""
+    decoupling     = enriched.get("aerobic_decoupling")
+    hr_zones       = enriched.get("hr_zones") or {}
+    training_load  = enriched.get("training_load") or {}
+    milestones     = enriched.get("milestones") or []
+    hr_baseline    = enriched.get("hr_baseline")
+    pace_sec       = enriched.get("pace_sec_km")
+    adj_pace_sec   = enriched.get("adjusted_pace_sec_km")
+    aqi_val        = aqi_data.get("aqi")
 
-    aqi_val = aqi_data.get("aqi")
     embed = discord.Embed(
         title="{} {} — {:.1f} km".format(emoji, activity.get("name", sport), dist_km),
         color=_embed_color(aqi_val, decoupling),
     )
 
+    # ── Subtitle ──────────────────────────────────────────────────────────────
     subtitle_parts = []
     if location_name:
         subtitle_parts.append("📍 {}".format(location_name))
     if time_context:
-        subtitle_parts.append("🌅 {}".format(time_context).replace("run", "").strip() if "sunrise" in time_context else "⏰ {}".format(time_context))
-    subtitle_parts.append("🗓️ {}".format(start_time.strftime("%a %d %b")))
+        tc = time_context.replace(" run", "").replace(" Run", "")
+        subtitle_parts.append("🌅 {}".format(tc) if "sunrise" in time_context.lower() else "⏰ {}".format(tc))
+    subtitle_parts.append(start_time.strftime("%a %d %b"))
     embed.description = "  ·  ".join(subtitle_parts)
 
-    # Conditions bar
-    cond_parts = []
-    if weather.get("temp_c") is not None:
-        cond_parts.append("🌡️ {}°C / feels {}°C".format(
-            round(weather["temp_c"]), round(weather["feels_like_c"])
-        ))
-    if weather.get("humidity_pct"):
-        cond_parts.append("💧 {}%".format(weather["humidity_pct"]))
-    if aqi_data:
-        aqi_label = "🌿 AQI {} — {}".format(aqi_val, aqi_data.get("level", ""))
-        cond_parts.append(aqi_label)
-    if cond_parts:
-        embed.add_field(name="Conditions", value="  ·  ".join(cond_parts), inline=False)
+    # ── Conditions ────────────────────────────────────────────────────────────
+    if weather or aqi_data:
+        cond_lines = []
+        if weather.get("temp_c") is not None:
+            weather_str = "🌡️ **{}°C** / feels {}°C".format(
+                round(weather["temp_c"]), round(weather["feels_like_c"])
+            )
+            if weather.get("humidity_pct"):
+                weather_str += "   💧 {}% humidity".format(weather["humidity_pct"])
+            cond_lines.append(weather_str)
+        if aqi_data and aqi_val is not None:
+            aqi_icon = "🟢" if aqi_val <= 50 else ("🟡" if aqi_val <= 100 else ("🟠" if aqi_val <= 150 else "🔴"))
+            cond_lines.append("{} AQI {} — {}".format(aqi_icon, aqi_val, aqi_data.get("level", "")))
+        embed.add_field(name="Conditions", value="\n".join(cond_lines), inline=False)
 
-    # Core metrics
-    metrics = []
+    # ── Core metrics (inline) ─────────────────────────────────────────────────
     if pace_sec:
-        pace_line = "**{}**/km".format(_fmt_pace(pace_sec))
+        pace_val = "**{}**/km".format(_fmt_pace(pace_sec))
         if adj_pace_sec and abs(adj_pace_sec - pace_sec) > 5:
-            pace_line += "\n≈ **{}** adjusted".format(_fmt_pace(adj_pace_sec))
-        metrics.append(("Pace", pace_line))
+            pace_val += "\n≈ **{}** adjusted".format(_fmt_pace(adj_pace_sec))
+        embed.add_field(name="Pace", value=pace_val, inline=True)
 
-    metrics.append(("Duration", _fmt_duration(moving)))
+    embed.add_field(name="Duration", value="**{}**\nmoving".format(_fmt_duration(moving)), inline=True)
 
     if avg_hr:
-        hr_line = "**{}** bpm".format(int(avg_hr))
-        delta = _hr_delta_str(avg_hr, hr_baseline)
-        if delta:
-            hr_line += "\n{}".format(delta)
-        metrics.append(("Avg HR", hr_line))
+        hr_val = "**{}** bpm".format(int(avg_hr))
+        if hr_baseline:
+            delta = int(avg_hr) - hr_baseline
+            hr_val += "\n{}{} vs baseline".format("+" if delta >= 0 else "", delta)
+        embed.add_field(name="Avg HR", value=hr_val, inline=True)
 
     if elev and elev > 5:
-        metrics.append(("Elev gain", "+{}m".format(int(elev))))
+        embed.add_field(name="Elev gain", value="**+{}m**\ntotal".format(int(elev)), inline=True)
 
-    for name, value in metrics:
-        embed.add_field(name=name, value=value, inline=True)
-
-    # Milestone banner
+    # ── Milestone ─────────────────────────────────────────────────────────────
     if milestones:
         embed.add_field(
             name="🏆 Milestone",
@@ -266,59 +378,47 @@ def build_embed(activity: dict, enriched: dict, insight: str) -> discord.Embed:
             inline=False,
         )
 
-    # HR zones + decoupling
+    # ── Effort quality ────────────────────────────────────────────────────────
     if hr_zones:
-        zone_parts = []
-        for zone, pct in hr_zones.items():
-            short = zone.replace("Zone ", "Z")
-            zone_parts.append("{} {}%".format(short, pct))
-        zone_str = "  ·  ".join(zone_parts)
+        effort_lines = [_fmt_zones(hr_zones)]
         if decoupling is not None:
-            quality = "✅ solid" if decoupling < 5 else ("⚠️ moderate drift" if decoupling < 10 else "❌ high drift")
-            zone_str += "\nAerobic decoupling **{}%** — {}".format(decoupling, quality)
-        embed.add_field(name="Effort quality", value=zone_str, inline=False)
+            if decoupling < 5:
+                dc_label = "bagus untuk long run"
+            elif decoupling < 10:
+                dc_label = "moderate drift"
+            else:
+                dc_label = "high drift — perlu perhatian"
+            effort_lines.append("Aerobic decoupling **{}%** — {}".format(decoupling, dc_label))
+        embed.add_field(name="Effort quality", value="\n".join(effort_lines), inline=False)
 
-    # Goal alignment
-    goal_lines = _build_goal_alignment(training_load, pace_sec, activity)
-    if goal_lines:
-        embed.add_field(name="Training load", value="\n".join(goal_lines), inline=False)
+    # ── Goal alignment ────────────────────────────────────────────────────────
+    if goal_checks:
+        icon_map = {"ok": "✅", "warning": "⚠️", "flag": "❌"}
+        check_lines = [
+            "{} {}".format(icon_map.get(c.get("status", "ok"), "•"), c.get("text", ""))
+            for c in goal_checks
+        ]
+        embed.add_field(name="Goal alignment", value="\n".join(check_lines), inline=False)
 
-    # Coach insight
+    # ── Coach insight ─────────────────────────────────────────────────────────
     if insight:
-        embed.add_field(name="💬 Coach", value=insight, inline=False)
+        embed.add_field(name="Coach insight", value=insight, inline=False)
 
-    # Footer
-    strava_id = activity.get("id")
+    # ── Footer: recovery + load spike + strava ────────────────────────────────
     footer_parts = []
+    if hr_zones and moving:
+        recovery_str = _estimate_recovery_hours(hr_zones, decoupling, moving)
+        footer_parts.append("Est. recovery {}".format(recovery_str))
     if training_load.get("change_pct") is not None:
         change = training_load["change_pct"]
         sign = "+" if change >= 0 else ""
-        footer_parts.append("Weekly volume {}{}% vs last week".format(sign, change))
+        footer_parts.append("Load spike {}{}% vs minggu lalu".format(sign, change))
+    strava_id = activity.get("id")
     if strava_id:
         footer_parts.append("strava.com/activities/{}".format(strava_id))
     embed.set_footer(text="  ·  ".join(footer_parts))
 
     return embed
-
-
-def _build_goal_alignment(training_load: dict, pace_sec: float | None, activity: dict) -> list[str]:
-    lines = []
-    tw = training_load.get("this_week_km", 0)
-    lw = training_load.get("last_week_km", 0)
-    change = training_load.get("change_pct")
-
-    if tw > 0:
-        lines.append("📅 This week: **{} km** ({} runs)".format(
-            tw, training_load.get("this_week_runs", 0)
-        ))
-    if change is not None:
-        sign = "+" if change >= 0 else ""
-        icon = "📈" if change >= 0 else "📉"
-        lines.append("{} {}{}% vs last week ({} km)".format(icon, sign, change, lw))
-        if change > 30:
-            lines.append("⚠️ Volume spike >30% — consider an easy day")
-
-    return lines
 
 
 # ── Main entry point ────────────────────────────────────────────────────────────
@@ -340,10 +440,12 @@ async def post_run_analysis(
 
     enriched = await enrich_activity(activity, activities)
 
+    goal_checks = _generate_goal_alignment(activity, enriched, goals_content, claude_client)
+
     prompt = _build_insight_prompt(activity, enriched, kb_content, goals_content)
     insight = _generate_insight(prompt, claude_client)
 
-    embed = build_embed(activity, enriched, insight)
+    embed = build_embed(activity, enriched, insight, goal_checks=goal_checks)
 
     try:
         await channel.send(embed=embed)

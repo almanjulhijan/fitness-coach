@@ -438,8 +438,13 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
 
                 RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
                 if sport in RUN_SPORTS:
-                    post_run_category = os.getenv("POST_RUN_CATEGORY", "Running")
-                    goals_content = load_goals(post_run_category)
+                    # Load full goals file content (preserves structure)
+                    goals_content = ""
+                    for goals_file in sorted(KB_DIR.glob("goals_*.md")):
+                        text = goals_file.read_text(encoding="utf-8").strip()
+                        if text:
+                            goals_content += text + "\n\n"
+                    goals_content = goals_content.strip()
 
                     await post_run_analysis(
                         activity=full_activity,
