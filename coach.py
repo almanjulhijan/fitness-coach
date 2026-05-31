@@ -2,6 +2,7 @@
 """Strava Training Coach — Discord bot powered by Claude + Strava data."""
 
 import asyncio
+import datetime as dt
 from datetime import datetime, timedelta, timezone
 import os
 import re
@@ -13,12 +14,14 @@ import aiohttp
 from aiohttp import web
 import anthropic
 import discord
-from discord.ext import commands
+from discord import app_commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from strava.auth import get_valid_token
 from strava.client import StravaClient
 from post_run import post_run_analysis
+from weekly_analysis import generate_weekly_analysis
 
 load_dotenv()
 
@@ -364,6 +367,75 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
     intents.message_content = True
     bot = commands.Bot(command_prefix="!", intents=intents)
 
+    weekly_category = os.getenv("WEEKLY_REVIEW_CATEGORY", "Running")
+    weekly_channel  = os.getenv("WEEKLY_REVIEW_CHANNEL", "review")
+
+    async def run_weekly_analysis(channel: discord.TextChannel) -> None:
+        """Ask for weight, then post weekly analysis embed."""
+        await channel.send(
+            "Selamat pagi! Sebelum gue post weekly review, "
+            "**berat badan lo sekarang berapa?** (ketik dalam kg, contoh: `73.5`)\n"
+            "_Gue tunggu 12 jam — kalau gak ada reply, gue post tanpa data berat._"
+        )
+
+        weight_kg = None
+        try:
+            def _weight_check(m: discord.Message) -> bool:
+                if m.channel != channel or m.author.bot:
+                    return False
+                try:
+                    float(m.content.replace(",", ".").replace("kg", "").strip())
+                    return True
+                except ValueError:
+                    return False
+
+            weight_msg = await bot.wait_for("message", check=_weight_check, timeout=43200)
+            weight_kg = float(weight_msg.content.replace(",", ".").replace("kg", "").strip())
+        except asyncio.TimeoutError:
+            await channel.send("Gak ada response dalam 12 jam — posting weekly review tanpa data berat.")
+
+        async with channel.typing():
+            try:
+                tokens = get_valid_token(client_id, client_secret)
+                strava = StravaClient(tokens["access_token"])
+                kb = load_knowledge_base()
+                goals_path = Path("knowledge_base/goals_running.md")
+                goals_content = goals_path.read_text(encoding="utf-8") if goals_path.exists() else ""
+
+                embed = await generate_weekly_analysis(
+                    activities=state["activities"],
+                    strava=strava,
+                    kb_content=kb,
+                    goals_content=goals_content,
+                    claude_client=claude,
+                    weight_kg=weight_kg,
+                )
+                await channel.send(embed=embed)
+            except Exception as e:
+                await channel.send(f"❌ Weekly analysis gagal: {e}")
+
+    @tasks.loop(time=dt.time(hour=22, minute=0, tzinfo=timezone.utc))  # 05:00 WIB
+    async def weekly_analysis_task() -> None:
+        if datetime.now(WIB).weekday() != 0:  # Monday only
+            return
+        channel = discord.utils.get(
+            bot.get_all_channels(),
+            name=weekly_channel,
+            category__name=weekly_category,
+        )
+        if not channel:
+            print(f"⚠️  Channel #{weekly_channel} in '{weekly_category}' not found.")
+            return
+        await run_weekly_analysis(channel)
+
+    @bot.tree.command(name="weekly-review", description="Generate weekly training analysis")
+    async def weekly_review_command(interaction: discord.Interaction) -> None:
+        if not state["activities"]:
+            await interaction.response.send_message("⚠️ No data loaded yet. Try `!refresh` first.")
+            return
+        await interaction.response.send_message("Starting weekly review...")
+        await run_weekly_analysis(interaction.channel)
+
     async def apply_strava_profile_updates(athlete, activities):
         """Auto-update about_me.md from Strava data and notify #feed if anything changed."""
         updates = extract_strava_profile_updates(athlete, activities)
@@ -489,6 +561,9 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         print("Bot online as {}".format(bot.user))
         print("Mention @{} to chat.".format(bot.user.name))
         await apply_strava_profile_updates(state["athlete"], state["activities"])
+        await bot.tree.sync()
+        print("Slash commands synced.")
+        weekly_analysis_task.start()
 
     @bot.command(name="refresh")
     async def refresh(ctx):
