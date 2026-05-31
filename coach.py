@@ -146,18 +146,34 @@ def _goals_file(category_name):
 
 
 def load_goals(category_name):
+    """Return full goals file content for a category (rich markdown)."""
     f = _goals_file(category_name)
     if not f.exists():
-        return []
-    lines = f.read_text(encoding="utf-8").splitlines()
-    return [l.lstrip("- ").strip() for l in lines if l.strip().startswith("-")]
+        return ""
+    return f.read_text(encoding="utf-8").strip()
 
 
 def save_goals(category_name, goals):
+    """Update 'Active Targets' section in goals file, preserving all other content."""
     KB_DIR.mkdir(exist_ok=True)
-    content = "# Goals: {}\n\n".format(category_name)
-    content += "\n".join("- {}".format(g) for g in goals)
-    _goals_file(category_name).write_text(content, encoding="utf-8")
+    f = _goals_file(category_name)
+    targets_section = "## Active Targets\n\n" + "\n".join("- {}".format(g) for g in goals)
+
+    if not f.exists():
+        f.write_text("# Goals: {}\n\n{}\n".format(category_name, targets_section), encoding="utf-8")
+        return
+
+    text = f.read_text(encoding="utf-8")
+    if "## Active Targets" in text:
+        new_text = re.sub(
+            r'## Active Targets\n.*?(?=\n## |\Z)',
+            targets_section,
+            text,
+            flags=re.DOTALL,
+        )
+    else:
+        new_text = text.rstrip() + "\n\n" + targets_section + "\n"
+    f.write_text(new_text, encoding="utf-8")
 
 
 def load_knowledge_base():
@@ -222,11 +238,7 @@ You have a tool to propose profile updates (propose_profile_update). Use it when
 
 
 def build_system_prompt_for_category(category_name, kb_content, activities_summary):
-    goals = load_goals(category_name) if category_name else []
-    goals_content = ""
-    if goals:
-        goals_content = "## Goals: {}\n\n".format(category_name)
-        goals_content += "\n".join("- {}".format(g) for g in goals)
+    goals_content = load_goals(category_name) if category_name else ""
     return build_system_prompt(kb_content, activities_summary, goals_content)
 
 
@@ -427,12 +439,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
                 if sport in RUN_SPORTS:
                     category_name = post_run_channel_name
-                    goals = load_goals(category_name)
-                    goals_content = ""
-                    if goals:
-                        goals_content = "## Goals\n\n" + "\n".join(
-                            "- {}".format(g) for g in goals
-                        )
+                    goals_content = load_goals(category_name)
 
                     await post_run_analysis(
                         activity=full_activity,
@@ -572,11 +579,8 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                                 continue
 
                             if block.name == "get_goals":
-                                goals = load_goals(category_name) if category_name else []
-                                result = (
-                                    "\n".join("- {}".format(g) for g in goals)
-                                    if goals else "No goals set yet."
-                                )
+                                content = load_goals(category_name) if category_name else ""
+                                result = content if content else "No goals set yet."
 
                             elif block.name == "set_goals":
                                 if category_name:
