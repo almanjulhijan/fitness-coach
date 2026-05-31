@@ -4,6 +4,7 @@ from typing import Optional
 import requests
 
 STRAVA_API_BASE = "https://www.strava.com/api/v3"
+WIB = timezone(timedelta(hours=7))  # Waktu Indonesia Barat (UTC+7)
 
 # Sports where pace (min/km) makes sense
 PACE_SPORTS = {"Run", "TrailRun", "VirtualRun", "Walk", "Hike"}
@@ -97,8 +98,8 @@ class StravaClient:
 
 
 def _format_single_activity(act: dict) -> str:
-    date = datetime.fromisoformat(act["start_date"].replace("Z", "+00:00"))
-    date_str = date.strftime("%Y-%m-%d")
+    date = datetime.fromisoformat(act["start_date"].replace("Z", "+00:00")).astimezone(WIB)
+    date_str = date.strftime("%Y-%m-%d %H:%M WIB")
 
     sport = act.get("sport_type") or act.get("type", "Unknown")
     name = act.get("name", "Untitled")

@@ -448,11 +448,12 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 # Show what was loaded so user can verify freshness
                 count = len(new_activities)
                 if new_activities:
-                    from datetime import datetime, timezone
+                    from datetime import datetime, timezone, timedelta
+                    WIB = timezone(timedelta(hours=7))
                     latest = max(new_activities, key=lambda a: a["start_date"])
                     latest_date = datetime.fromisoformat(
                         latest["start_date"].replace("Z", "+00:00")
-                    ).astimezone(None).strftime("%d %b %Y, %H:%M")
+                    ).astimezone(WIB).strftime("%d %b %Y, %H:%M WIB")
                     latest_name = latest.get("name", "Untitled")
                     await ctx.send(
                         "✅ Refreshed — **{} activities** loaded.\n"
