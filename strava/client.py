@@ -51,6 +51,12 @@ class StravaClient:
 
         return activities
 
+    def get_activity(self, activity_id: int) -> dict:
+        """Fetch a single activity with full detail (includes splits_metric, laps, etc.)."""
+        resp = self.session.get(f"{STRAVA_API_BASE}/activities/{activity_id}", timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
     def format_activities_summary(self, activities: list[dict], athlete: Optional[dict] = None) -> str:
         header_parts = ["## Recent Training Data (Last 30 Days)"]
 

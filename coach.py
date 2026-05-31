@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 from strava.auth import get_valid_token
 from strava.client import StravaClient
+from post_run import post_run_analysis
 
 load_dotenv()
 
@@ -386,12 +387,15 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         return web.Response(status=200, text="OK")
 
     async def process_strava_event(data):
-        obj_type = data.get("object_type")
-        aspect   = data.get("aspect_type")
+        obj_type    = data.get("object_type")
+        aspect      = data.get("aspect_type")
+        activity_id = data.get("object_id")
+
         if obj_type != "activity" or aspect not in ("create", "update"):
             return
 
-        print("Strava event: {} {}".format(aspect, obj_type))
+        print("Strava event: {} {} (id={})".format(aspect, obj_type, activity_id))
+
         try:
             new_summary, new_athlete, new_activities = load_strava_data(client_id, client_secret)
             state["activities_summary"] = new_summary
@@ -403,13 +407,51 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             print("Error refreshing after webhook: {}".format(e))
             return
 
-        verb = "New activity synced 🎉" if aspect == "create" else "Activity updated"
+        post_run_channel_name = os.getenv("POST_RUN_CHANNEL", "feed")
         feed_channel = discord.utils.find(
-            lambda c: isinstance(c, discord.TextChannel) and c.name == "feed",
+            lambda c: isinstance(c, discord.TextChannel) and c.name == post_run_channel_name,
             bot.get_all_channels(),
         )
-        if feed_channel:
-            await feed_channel.send("📊 **{}** — Strava data updated!".format(verb))
+
+        if not feed_channel:
+            print("Channel #{} not found — skipping post.".format(post_run_channel_name))
+            return
+
+        if aspect == "create" and activity_id:
+            try:
+                tokens = get_valid_token(client_id, client_secret)
+                strava = StravaClient(tokens["access_token"])
+                full_activity = strava.get_activity(activity_id)
+                sport = full_activity.get("sport_type") or full_activity.get("type", "")
+
+                RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
+                if sport in RUN_SPORTS:
+                    category_name = post_run_channel_name
+                    goals = load_goals(category_name)
+                    goals_content = ""
+                    if goals:
+                        goals_content = "## Goals\n\n" + "\n".join(
+                            "- {}".format(g) for g in goals
+                        )
+
+                    await post_run_analysis(
+                        activity=full_activity,
+                        activities=state["activities"],
+                        athlete=state["athlete"],
+                        kb_content=state["kb_content"],
+                        goals_content=goals_content,
+                        channel=feed_channel,
+                        claude_client=claude,
+                    )
+                else:
+                    await feed_channel.send("📊 **New activity synced** — {}".format(
+                        full_activity.get("name", sport)
+                    ))
+            except Exception as e:
+                print("Post-run analysis failed: {}".format(e))
+                await feed_channel.send("📊 **New activity synced** — data refreshed.")
+        else:
+            await feed_channel.send("🔄 Activity updated — data refreshed.")
 
     # ── Start aiohttp webhook server ─────────────────────────────────────────────
 
