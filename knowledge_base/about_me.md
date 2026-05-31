@@ -1,65 +1,26 @@
 # About Me
 
-<!-- Edit this file to give your coach context about who you are.
-     The more detail you add, the better your coach can help you. -->
-
 ## Personal Info
 
-- **Age:** 
-- **Gender:** 
-- **Weight:** 
-- **Height:** 
+- **Born:** 11 April 1997 at Bekasi, Indonesia
+- **Gender:** Male
+- **Height:** 180 cm
+- **Weight:** 78 kg
 
 ## Athletic Background
 
-<!-- How long have you been running/cycling/swimming? Any notable history? -->
+<!-- Cerita singkat: udah berapa lama aktif, background olahraga -->
 
-## Current Goals
+## Sports
 
-<!-- e.g., "Complete my first marathon in under 4 hours by October 2025" -->
-<!-- e.g., "Finish an Olympic triathlon this summer" -->
+- **Primary:** Running, Gym (strength training)
 
-1. 
-2. 
-
-## Upcoming Races
-
-<!-- List races you're targeting, with date and goal time/finishing -->
-
-| Race | Date | Distance | Goal |
-|------|------|----------|------|
-|      |      |          |      |
-
-## Weekly Training Schedule
-
-<!-- What days can you train? Any constraints? -->
-
-- **Available days:**
-- **Long run/ride day:**
-- **Rest days:**
-- **Time available per session:**
-
-## Injuries & Health Notes
-
-<!-- Any current or recurring injuries, physical limitations, or health conditions your coach should know about -->
-
-## Equipment
-
-<!-- What gear are you running on? Shoes, bike type, etc. -->
-
-- **Running shoes:**
-- **Bike:**
-- **GPS watch:**
-
-## Training Zones (if known)
-
-<!-- Paste your HR or power zones if you have them -->
+## Training Zones
 
 - **Max HR:**
-- **Resting HR:**
+- **Easy pace (Zone 2):**
 - **Lactate threshold HR:**
-- **FTP (cycling):**
 
 ## Notes
 
-<!-- Anything else your coach should know — sleep quality, stress levels, training philosophy, etc. -->
+<!-- Hal lain yang relevan buat coaching -->
