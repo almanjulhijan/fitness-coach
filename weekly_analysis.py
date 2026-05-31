@@ -374,6 +374,71 @@ def _trunc(text: str, limit: int = 1024) -> str:
     return text[: limit - 1] + "…"
 
 
+# ── Goal reflection ───────────────────────────────────────────────────────────
+
+def compute_goal_reflection(
+    enriched_runs: list[dict],
+    run_count: int,
+    zones_agg: dict,
+    km_change_pct: Optional[int],
+    goal_progress: int,
+) -> str:
+    """Return a formatted goal reflection string for the Discord embed field."""
+    checks: list[str] = []
+    icon = {"ok": "✅", "warn": "⚠️", "flag": "❌"}
+
+    # 1. Consistency: 3–5 sessions per week
+    if run_count >= 3 and run_count <= 5:
+        checks.append(f"{icon['ok']} **Konsistensi:** {run_count} sesi — target 3–5x terpenuhi.")
+    elif run_count < 3:
+        checks.append(f"{icon['flag']} **Konsistensi:** {run_count} sesi — di bawah minimum 3x/minggu.")
+    else:
+        checks.append(f"{icon['warn']} **Konsistensi:** {run_count} sesi — di atas 5x, pastikan recovery cukup.")
+
+    # 2. Intensity: Zone 2 target ≥80%
+    z2 = zones_agg.get("Zone 2", 0)
+    if z2 >= 80:
+        checks.append(f"{icon['ok']} **Intensitas:** {z2}% di Zone 2 — sesuai target 80% easy.")
+    elif z2 >= 65:
+        checks.append(f"{icon['warn']} **Intensitas:** {z2}% di Zone 2, target 80%. Terlalu sering push ke Zone 3+.")
+    elif z2 > 0:
+        checks.append(f"{icon['flag']} **Intensitas:** hanya {z2}% di Zone 2 — mayoritas lari terlalu keras.")
+
+    # 3. Load spike: max 10% increase recommended
+    if km_change_pct is None:
+        pass
+    elif km_change_pct <= 10:
+        checks.append(f"{icon['ok']} **Load:** volume naik {km_change_pct}% — dalam batas aman ≤10%.")
+    elif km_change_pct <= 20:
+        checks.append(f"{icon['warn']} **Load spike:** +{km_change_pct}% dari minggu lalu — sedikit di atas batas aman.")
+    elif km_change_pct > 20:
+        checks.append(f"{icon['flag']} **Load spike:** +{km_change_pct}% dari minggu lalu — risiko overtraining, turunkan minggu depan.")
+    elif km_change_pct < 0:
+        checks.append(f"{icon['warn']} **Load:** volume turun {abs(km_change_pct)}% — ok kalau recovery week, monitor konsistensi.")
+
+    # 4. Quality session: check if any run had Zone 3+ effort > 20%
+    quality_runs = [
+        r for r in enriched_runs
+        if (r["hr_zones"].get("Zone 3", 0) + r["hr_zones"].get("Zone 4", 0) + r["hr_zones"].get("Zone 5", 0)) > 20
+    ]
+    if quality_runs:
+        checks.append(f"{icon['ok']} **Quality session:** ada {len(quality_runs)} sesi dengan effort Zone 3+ — target minimum 1x/minggu terpenuhi.")
+    else:
+        checks.append(f"{icon['warn']} **Quality session:** tidak ada sesi dengan effort tinggi — pertimbangkan 1 tempo atau interval per minggu.")
+
+    # 5. Aerobic goal progress (6:00/km @ HR≤140)
+    if goal_progress >= 80:
+        checks.append(f"{icon['ok']} **Aerobic goal:** {goal_progress}% menuju 6:00/km @ HR≤140 — hampir tercapai.")
+    elif goal_progress >= 50:
+        checks.append(f"{icon['ok']} **Aerobic goal:** {goal_progress}% menuju 6:00/km @ HR≤140 — on track.")
+    elif goal_progress > 0:
+        checks.append(f"{icon['warn']} **Aerobic goal:** {goal_progress}% menuju 6:00/km @ HR≤140 — masih jauh, fokus easy runs.")
+    else:
+        checks.append(f"{icon['warn']} **Aerobic goal:** belum cukup data untuk estimate progress.")
+
+    return "\n".join(checks)
+
+
 # ── Claude insight ─────────────────────────────────────────────────────────────
 
 def _build_prompt(
@@ -444,7 +509,7 @@ def _build_embed(
     gym_count, gym_details, avg_hr, zones_agg, avg_decoupling,
     prev_avg_decoupling, avg_adj_pace, prev_avg_adj_pace,
     weather_insight, tod_analysis, gym_flags, schedule_grid,
-    goal_progress, weight_kg, insight,
+    goal_progress, weight_kg, insight, goal_reflection,
 ) -> discord.Embed:
     week_end = week_start + timedelta(days=6)
     now_wib = datetime.now(WIB)
@@ -531,6 +596,10 @@ def _build_embed(
         if tod_lines:
             embed.add_field(name="Pagi vs sore", value=_trunc("\n".join(tod_lines)), inline=False)
 
+    # Goal reflection
+    if goal_reflection:
+        embed.add_field(name="Goal reflection", value=_trunc(goal_reflection), inline=False)
+
     # Claude insight + recommendation
     if insight:
         embed.add_field(name="Insight & rekomendasi", value=_trunc(insight), inline=False)
@@ -591,6 +660,15 @@ async def generate_weekly_analysis(
     hr_vals = [r["activity"]["average_heartrate"] for r in enriched_this if r["activity"].get("average_heartrate")]
     avg_hr = round(sum(hr_vals) / len(hr_vals)) if hr_vals else None
 
+    # Goal reflection
+    goal_reflection = compute_goal_reflection(
+        enriched_runs=enriched_this,
+        run_count=len(this_runs),
+        zones_agg=zones_agg,
+        km_change_pct=km_change_pct,
+        goal_progress=goal_progress,
+    )
+
     # Claude
     prompt = _build_prompt(
         total_km=total_km, prev_km=prev_km, run_count=len(this_runs),
@@ -612,6 +690,7 @@ async def generate_weekly_analysis(
         prev_avg_adj_pace=prev_avg_adj_pace, weather_insight=weather_insight,
         tod_analysis=tod_analysis, gym_flags=gym_flags, schedule_grid=schedule_grid,
         goal_progress=goal_progress, weight_kg=weight_kg, insight=insight,
+        goal_reflection=goal_reflection,
     )
 
     # Build plain-text summary for conversation history injection
