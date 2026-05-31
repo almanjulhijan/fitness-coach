@@ -103,15 +103,15 @@ def classify_muscle_group(description: str) -> dict:
 def _week_range(weeks_ago: int = 0) -> tuple[datetime, datetime]:
     """Return (start, end) for a given week relative to the most recent Monday (WIB).
 
-    weeks_ago=0 → last full week (Mon–Sun)
-    weeks_ago=1 → the week before that
+    weeks_ago=0 → current week (this Monday → now)
+    weeks_ago=1 → last full week (Mon–Sun)
     """
     now = datetime.now(WIB)
     this_monday = (now - timedelta(days=now.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-    week_start = this_monday - timedelta(weeks=weeks_ago + 1)
-    week_end = week_start + timedelta(days=7)
+    week_start = this_monday - timedelta(weeks=weeks_ago)
+    week_end = now if weeks_ago == 0 else week_start + timedelta(days=7)
     return week_start, week_end
 
 
@@ -446,8 +446,10 @@ def _build_embed(
     weather_insight, tod_analysis, gym_flags, schedule_grid,
     goal_progress, weight_kg, insight,
 ) -> discord.Embed:
-    week_end = week_start + timedelta(days=6)
-    title = f"Weekly Review — {week_start.strftime('%-d %b')} – {week_end.strftime('%-d %b')}"
+    now_wib = datetime.now(WIB)
+    is_current_week = week_end.date() >= now_wib.date()
+    display_end = now_wib if is_current_week else week_start + timedelta(days=6)
+    title = f"Weekly Review — {week_start.strftime('%-d %b')} – {display_end.strftime('%-d %b')}"
 
     gym_types = [g["classified"]["type"] for g in gym_details]
     gym_subtitle = " · ".join(
