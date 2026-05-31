@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """Strava Training Coach — Discord Bot powered by Claude + your Strava data."""
 
+import asyncio
+import datetime as dt
 import os
 import sys
 from collections import defaultdict
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import anthropic
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from dotenv import load_dotenv
 
 from strava.auth import get_valid_token
 from strava.client import StravaClient
+from weekly_analysis import generate_weekly_analysis
+
+WIB = timezone(timedelta(hours=7))
 
 load_dotenv()
 
@@ -28,6 +35,9 @@ conversation_history: dict[int, list[dict]] = defaultdict(list)
 system_prompt: list[dict] = []
 cached_activities: list[dict] = []
 cached_athlete: dict = {}
+
+WEEKLY_CATEGORY = os.getenv("WEEKLY_REVIEW_CATEGORY", "Running")
+WEEKLY_CHANNEL = os.getenv("WEEKLY_REVIEW_CHANNEL", "review")
 
 
 # ── Helpers (reused from coach.py) ────────────────────────────────────────────
@@ -223,6 +233,71 @@ bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
 
+async def run_weekly_analysis(channel: discord.TextChannel) -> None:
+    """Ask for weight, then post weekly analysis embed."""
+    await channel.send(
+        "Selamat pagi! Sebelum gue post weekly review, "
+        "**berat badan lo sekarang berapa?** (ketik dalam kg, contoh: `73.5`)\n"
+        "_Gue tunggu 12 jam — kalau gak ada reply, gue post tanpa data berat._"
+    )
+
+    weight_kg = None
+    try:
+        def _weight_check(m: discord.Message) -> bool:
+            if m.channel != channel or m.author.bot:
+                return False
+            try:
+                float(m.content.replace(",", ".").replace("kg", "").strip())
+                return True
+            except ValueError:
+                return False
+
+        weight_msg = await bot.wait_for("message", check=_weight_check, timeout=43200)
+        weight_kg = float(weight_msg.content.replace(",", ".").replace("kg", "").strip())
+    except asyncio.TimeoutError:
+        await channel.send("Gak ada response dalam 12 jam — posting weekly review tanpa data berat.")
+
+    async with channel.typing():
+        try:
+            token = get_valid_token(
+                os.getenv("STRAVA_CLIENT_ID", "").strip(),
+                os.getenv("STRAVA_CLIENT_SECRET", "").strip(),
+            )
+            strava = StravaClient(token["access_token"])
+            kb_content = load_knowledge_base()
+            goals_path = Path("knowledge_base/goals_running.md")
+            goals_content = goals_path.read_text(encoding="utf-8") if goals_path.exists() else ""
+
+            embed = await generate_weekly_analysis(
+                activities=cached_activities,
+                strava=strava,
+                kb_content=kb_content,
+                goals_content=goals_content,
+                claude_client=claude_client,
+                weight_kg=weight_kg,
+            )
+            await channel.send(embed=embed)
+        except Exception as e:
+            await channel.send(f"❌ Weekly analysis gagal: {e}")
+
+
+# Trigger every day at 22:00 UTC = 05:00 WIB; only run on Monday (WIB)
+@tasks.loop(time=dt.time(hour=22, minute=0, tzinfo=timezone.utc))
+async def weekly_analysis_task() -> None:
+    from datetime import datetime
+    if datetime.now(WIB).weekday() != 0:
+        return
+    channel = discord.utils.get(
+        bot.get_all_channels(),
+        name=WEEKLY_CHANNEL,
+        category__name=WEEKLY_CATEGORY,
+    )
+    if not channel:
+        print(f"⚠️  Channel #{WEEKLY_CHANNEL} in category '{WEEKLY_CATEGORY}' not found.")
+        return
+    await run_weekly_analysis(channel)
+
+
 @bot.event
 async def on_ready():
     global system_prompt, cached_activities, cached_athlete
@@ -236,6 +311,7 @@ async def on_ready():
         print(f"✅ Loaded {len(cached_activities)} activities. Bot ready!")
     except Exception as e:
         print(f"⚠️  Could not load Strava data: {e}")
+    weekly_analysis_task.start()
 
 
 # ── Chat (mention or DM) ───────────────────────────────────────────────────────
@@ -294,13 +370,13 @@ async def stats_command(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 
-@tree.command(name="weekly", description="Compare this week vs last week")
-async def weekly_command(interaction: discord.Interaction):
+@tree.command(name="weekly-analysis", description="Generate weekly training analysis (asks for weight first)")
+async def weekly_analysis_command(interaction: discord.Interaction):
     if not cached_activities:
         await interaction.response.send_message("⚠️ No data loaded yet. Try `/refresh` first.")
         return
-    embed = build_weekly_embed(cached_activities)
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message("Starting weekly analysis...")
+    await run_weekly_analysis(interaction.channel)
 
 
 @tree.command(name="refresh", description="Reload your latest Strava data")
