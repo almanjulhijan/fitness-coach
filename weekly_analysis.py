@@ -551,7 +551,7 @@ async def generate_weekly_analysis(
     goals_content: str,
     claude_client: anthropic.Anthropic,
     weight_kg: Optional[float] = None,
-) -> discord.Embed:
+) -> tuple[discord.Embed, str]:
     """Aggregate a full week of run + gym data and return a Discord embed."""
     week_start, week_end = _week_range(weeks_ago=0)
     prev_start, prev_end = _week_range(weeks_ago=1)
@@ -603,7 +603,7 @@ async def generate_weekly_analysis(
     )
     insight = _generate_insight(prompt, claude_client)
 
-    return _build_embed(
+    embed = _build_embed(
         week_start=week_start, total_km=total_km, prev_km=prev_km,
         km_change_pct=km_change_pct, run_count=len(this_runs),
         gym_count=len(this_gym), gym_details=gym_details, avg_hr=avg_hr,
@@ -613,3 +613,20 @@ async def generate_weekly_analysis(
         tod_analysis=tod_analysis, gym_flags=gym_flags, schedule_grid=schedule_grid,
         goal_progress=goal_progress, weight_kg=weight_kg, insight=insight,
     )
+
+    # Build plain-text summary for conversation history injection
+    zone_str = ", ".join(f"{z}: {p}%" for z, p in zones_agg.items()) if zones_agg else "—"
+    summary_lines = [
+        f"[Weekly analysis posted — {week_start.strftime('%-d %b')} s/d {datetime.now(WIB).strftime('%-d %b')}]",
+        f"- Volume: {total_km:.1f} km ({len(this_runs)} runs, {len(this_gym)} gym)",
+        f"- Avg HR: {avg_hr} bpm" if avg_hr else "",
+        f"- Zone distribution: {zone_str}",
+        f"- Heat-adjusted pace: {_fmt_pace(avg_adj_pace)}/km" if avg_adj_pace else "",
+        f"- Aerobic decoupling: {avg_decoupling}%" if avg_decoupling is not None else "",
+        f"- Goal progress (6:00/km @ HR≤140): {goal_progress}%",
+        f"- Gym×Run flags: {'; '.join(gym_flags)}" if gym_flags else "",
+        f"- Insight: {insight}" if insight else "",
+    ]
+    summary = "\n".join(l for l in summary_lines if l)
+
+    return embed, summary

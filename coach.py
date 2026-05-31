@@ -380,7 +380,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 goals_path = Path("knowledge_base/goals_running.md")
                 goals_content = goals_path.read_text(encoding="utf-8") if goals_path.exists() else ""
 
-                embed = await generate_weekly_analysis(
+                embed, summary = await generate_weekly_analysis(
                     activities=state["activities"],
                     strava=strava,
                     kb_content=kb,
@@ -388,6 +388,8 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                     claude_client=claude,
                 )
                 await channel.send(embed=embed)
+                # Inject summary into channel history so follow-up @mentions have context
+                history[channel.id].append({"role": "assistant", "content": summary})
             except Exception as e:
                 await channel.send(f"❌ Weekly analysis gagal: {e}")
 
