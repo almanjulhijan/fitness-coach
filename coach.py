@@ -444,7 +444,22 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 state["activities"] = new_activities
                 history[ctx.channel.id].clear()
                 await apply_strava_profile_updates(new_athlete, new_activities)
-                await ctx.send("Strava data refreshed and conversation history cleared!")
+
+                # Show what was loaded so user can verify freshness
+                count = len(new_activities)
+                if new_activities:
+                    from datetime import datetime, timezone
+                    latest = max(new_activities, key=lambda a: a["start_date"])
+                    latest_date = datetime.fromisoformat(
+                        latest["start_date"].replace("Z", "+00:00")
+                    ).astimezone(None).strftime("%d %b %Y, %H:%M")
+                    latest_name = latest.get("name", "Untitled")
+                    await ctx.send(
+                        "✅ Refreshed — **{} activities** loaded.\n"
+                        "Aktivitas terbaru: **{}** ({})".format(count, latest_name, latest_date)
+                    )
+                else:
+                    await ctx.send("✅ Refreshed — no activities found in the last 30 days.")
             except Exception as e:
                 await ctx.send("Refresh failed: {}".format(e))
 
