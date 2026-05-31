@@ -25,7 +25,7 @@ RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
 GYM_SPORTS = {"WeightTraining", "Workout", "Crossfit"}
 
 MODEL = "claude-haiku-4-5"
-MAX_TOKENS = 800
+MAX_TOKENS = 500
 
 DAYS_SHORT = ["SEN", "SEL", "RAB", "KAM", "JUM", "SAB", "MIN"]
 TYPE_LABEL = {"upper": "UB", "lower": "LB", "full": "FB", "skill": "SK", "unknown": "??"}
@@ -367,6 +367,13 @@ def _fmt_pace(sec_km: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _trunc(text: str, limit: int = 1024) -> str:
+    """Truncate to Discord embed field limit."""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
 # ── Claude insight ─────────────────────────────────────────────────────────────
 
 def _build_prompt(
@@ -462,7 +469,7 @@ def _build_embed(
     gym_line = f"{gym_count} gym ({gym_subtitle})" if gym_subtitle else f"{gym_count} gym"
     embed.add_field(
         name="Volume",
-        value=f"**{total_km:.1f} km**{change_str}\n{run_count} runs · {gym_line}",
+        value=_trunc(f"**{total_km:.1f} km**{change_str}\n{run_count} runs · {gym_line}"),
         inline=False,
     )
 
@@ -479,7 +486,7 @@ def _build_embed(
         )
         z2 = zones_agg.get("Zone 2", 0)
         flag = "" if z2 >= 75 else f"\n⚠️ Zone 2 {z2}% — target 80%"
-        embed.add_field(name="Zone distribution", value=zone_str + flag, inline=False)
+        embed.add_field(name="Zone distribution", value=_trunc(zone_str + flag), inline=False)
 
     # Aerobic efficiency
     eff_lines = []
@@ -498,18 +505,18 @@ def _build_embed(
     bar_filled = round(goal_progress / 10)
     bar = "█" * bar_filled + "░" * (10 - bar_filled)
     eff_lines.append(f"Goal (6:00/km @ HR≤140): `{bar}` {goal_progress}%")
-    embed.add_field(name="Aerobic efficiency", value="\n".join(eff_lines), inline=False)
+    embed.add_field(name="Aerobic efficiency", value=_trunc("\n".join(eff_lines)), inline=False)
 
     # Gym × Run
     embed.add_field(
         name="Gym × Run",
-        value=schedule_grid + "\n" + "\n".join(gym_flags),
+        value=_trunc(schedule_grid + "\n" + "\n".join(gym_flags)),
         inline=False,
     )
 
     # Weather × Performance
     if weather_insight:
-        embed.add_field(name="Cuaca × performa", value=weather_insight, inline=False)
+        embed.add_field(name="Cuaca × performa", value=_trunc(weather_insight), inline=False)
 
     # Time of day
     if tod_analysis:
@@ -520,11 +527,11 @@ def _build_embed(
         if e["count"] and e["hr"] and e["pace"]:
             tod_lines.append(f"Sore ({e['count']}x): HR **{e['hr']}** · **{_fmt_pace(e['pace'])}/km**")
         if tod_lines:
-            embed.add_field(name="Pagi vs sore", value="\n".join(tod_lines), inline=False)
+            embed.add_field(name="Pagi vs sore", value=_trunc("\n".join(tod_lines)), inline=False)
 
     # Claude insight + recommendation
     if insight:
-        embed.add_field(name="Insight & rekomendasi", value=insight, inline=False)
+        embed.add_field(name="Insight & rekomendasi", value=_trunc(insight), inline=False)
 
     embed.set_footer(
         text=f"{run_count} runs · {gym_count} gym · fitness-coach weekly digest · "
