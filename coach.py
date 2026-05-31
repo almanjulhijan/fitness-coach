@@ -371,29 +371,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
     weekly_channel  = os.getenv("WEEKLY_REVIEW_CHANNEL", "review")
 
     async def run_weekly_analysis(channel: discord.TextChannel) -> None:
-        """Ask for weight, then post weekly analysis embed."""
-        await channel.send(
-            "Selamat pagi! Sebelum gue post weekly review, "
-            "**berat badan lo sekarang berapa?** (ketik dalam kg, contoh: `73.5`)\n"
-            "_Gue tunggu 12 jam — kalau gak ada reply, gue post tanpa data berat._"
-        )
-
-        weight_kg = None
-        try:
-            def _weight_check(m: discord.Message) -> bool:
-                if m.channel != channel or m.author.bot:
-                    return False
-                try:
-                    float(m.content.replace(",", ".").replace("kg", "").strip())
-                    return True
-                except ValueError:
-                    return False
-
-            weight_msg = await bot.wait_for("message", check=_weight_check, timeout=43200)
-            weight_kg = float(weight_msg.content.replace(",", ".").replace("kg", "").strip())
-        except asyncio.TimeoutError:
-            await channel.send("Gak ada response dalam 12 jam — posting weekly review tanpa data berat.")
-
+        """Generate and post weekly analysis embed."""
         async with channel.typing():
             try:
                 tokens = get_valid_token(client_id, client_secret)
@@ -408,7 +386,6 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                     kb_content=kb,
                     goals_content=goals_content,
                     claude_client=claude,
-                    weight_kg=weight_kg,
                 )
                 await channel.send(embed=embed)
             except Exception as e:
