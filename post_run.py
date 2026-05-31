@@ -155,10 +155,13 @@ def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals
 
     prompt = (
         "You are a personal running coach. Write a short, sharp post-run insight "
-        "in Bahasa Indonesia (2-4 sentences max). Be specific — reference the actual "
-        "numbers, conditions, and patterns. Highlight what's most interesting or "
-        "actionable. Don't be generic. Don't start with 'Bagus!' or 'Luar biasa!'.\n\n"
-        "## Athlete profile & goals\n{}\n{}\n\n"
+        "in Bahasa Indonesia (2-4 sentences max). Be specific — reference actual "
+        "numbers. Don't be generic. Don't start with 'Bagus!' or 'Luar biasa!'.\n\n"
+        "## Athlete Profile\n{}\n\n"
+        "## Training Goals\n{}\n\n"
+        "Evaluate this run against the athlete's Training Goals above: "
+        "flag if the effort level, HR zone distribution, or pace is misaligned with their targets. "
+        "Highlight what's most actionable for their next session.\n\n"
         "{}"
     ).format(kb_content or "(no profile)", goals_content or "(no goals)", context_block)
 

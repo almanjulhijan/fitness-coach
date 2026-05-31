@@ -438,8 +438,8 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
 
                 RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
                 if sport in RUN_SPORTS:
-                    category_name = post_run_channel_name
-                    goals_content = load_goals(category_name)
+                    post_run_category = os.getenv("POST_RUN_CATEGORY", "Running")
+                    goals_content = load_goals(post_run_category)
 
                     await post_run_analysis(
                         activity=full_activity,
