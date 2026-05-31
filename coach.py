@@ -8,6 +8,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import aiohttp
+from aiohttp import web
 import anthropic
 import discord
 from discord.ext import commands
@@ -271,9 +273,56 @@ class ProfileUpdateView(discord.ui.View):
         self._on_cancel()
 
 
+# ── Strava Webhook registration ────────────────────────────────────────────────
+
+STRAVA_PUSH_SUBS_URL = "https://www.strava.com/api/v3/push_subscriptions"
+
+
+async def ensure_webhook_registered(client_id, client_secret, public_url, verify_token):
+    """Register (or re-register) the Strava webhook subscription."""
+    callback_url = public_url.rstrip("/") + "/webhook"
+
+    async with aiohttp.ClientSession() as session:
+        # Check existing subscription
+        async with session.get(
+            STRAVA_PUSH_SUBS_URL,
+            params={"client_id": client_id, "client_secret": client_secret},
+        ) as r:
+            existing = await r.json() if r.status == 200 else []
+
+        if existing:
+            if existing[0].get("callback_url") == callback_url:
+                print("Webhook already registered: {}".format(callback_url))
+                return
+            # Different URL — delete old subscription first
+            sub_id = existing[0]["id"]
+            async with session.delete(
+                "{}/{}".format(STRAVA_PUSH_SUBS_URL, sub_id),
+                params={"client_id": client_id, "client_secret": client_secret},
+            ) as r:
+                print("Deleted old webhook subscription (id={})".format(sub_id))
+
+        # Register new subscription
+        async with session.post(
+            STRAVA_PUSH_SUBS_URL,
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "callback_url": callback_url,
+                "verify_token": verify_token,
+            },
+        ) as r:
+            if r.status == 201:
+                print("Webhook registered: {}".format(callback_url))
+            else:
+                body = await r.text()
+                print("Webhook registration failed ({}) — {}".format(r.status, body))
+
+
 # ── Discord bot ────────────────────────────────────────────────────────────────
 
-def run_bot(discord_token, client_id, client_secret, anthropic_key):
+async def run_bot(discord_token, client_id, client_secret, anthropic_key,
+                  public_url=None, verify_token=None, port=8080):
     claude = anthropic.Anthropic(api_key=anthropic_key)
 
     print("\n=== Strava Training Coach (Discord) ===")
@@ -317,6 +366,64 @@ def run_bot(discord_token, client_id, client_secret, anthropic_key):
             await feed_channel.send(
                 "📊 **Profile auto-updated dari Strava:**\n" + "\n".join(lines)
             )
+
+    # ── Strava webhook handlers (closures over bot + state) ──────────────────────
+
+    async def handle_webhook_verify(request):
+        """GET /webhook — Strava challenge verification."""
+        if request.query.get("hub.verify_token") == verify_token:
+            return web.json_response({"hub.challenge": request.query.get("hub.challenge", "")})
+        return web.Response(status=403, text="Forbidden")
+
+    async def handle_webhook_event(request):
+        """POST /webhook — incoming Strava event."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(status=400, text="Bad JSON")
+        # Respond immediately; process async
+        asyncio.create_task(process_strava_event(data))
+        return web.Response(status=200, text="OK")
+
+    async def process_strava_event(data):
+        obj_type = data.get("object_type")
+        aspect   = data.get("aspect_type")
+        if obj_type != "activity" or aspect not in ("create", "update"):
+            return
+
+        print("Strava event: {} {}".format(aspect, obj_type))
+        try:
+            new_summary, new_athlete, new_activities = load_strava_data(client_id, client_secret)
+            state["activities_summary"] = new_summary
+            state["athlete"]            = new_athlete
+            state["activities"]         = new_activities
+            state["kb_content"]         = load_knowledge_base()
+            await apply_strava_profile_updates(new_athlete, new_activities)
+        except Exception as e:
+            print("Error refreshing after webhook: {}".format(e))
+            return
+
+        verb = "New activity synced 🎉" if aspect == "create" else "Activity updated"
+        feed_channel = discord.utils.find(
+            lambda c: isinstance(c, discord.TextChannel) and c.name == "feed",
+            bot.get_all_channels(),
+        )
+        if feed_channel:
+            await feed_channel.send("📊 **{}** — Strava data updated!".format(verb))
+
+    # ── Start aiohttp webhook server ─────────────────────────────────────────────
+
+    if public_url and verify_token:
+        app = web.Application()
+        app.router.add_get("/webhook", handle_webhook_verify)
+        app.router.add_post("/webhook", handle_webhook_event)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        await web.TCPSite(runner, "0.0.0.0", port).start()
+        print("Webhook server listening on port {}".format(port))
+        await ensure_webhook_registered(client_id, client_secret, public_url, verify_token)
+    else:
+        print("PUBLIC_URL or WEBHOOK_VERIFY_TOKEN not set — webhook disabled.")
 
     @bot.event
     async def on_ready():
@@ -498,30 +605,32 @@ def run_bot(discord_token, client_id, client_secret, anthropic_key):
                 channel_history.pop()
                 await msg.channel.send("API error: {}".format(e))
 
-    bot.run(discord_token)
+    await bot.start(discord_token)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
-    expected = ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET", "ANTHROPIC_API_KEY", "DISCORD_BOT_TOKEN", "STRAVA_REFRESH_TOKEN"]
+    expected = [
+        "STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET",
+        "ANTHROPIC_API_KEY", "DISCORD_BOT_TOKEN", "STRAVA_REFRESH_TOKEN",
+    ]
     for var in expected:
         print("ENV {}: {}".format(var, "SET" if os.getenv(var) else "MISSING"))
 
-    client_id = os.getenv("STRAVA_CLIENT_ID", "").strip()
+    client_id     = os.getenv("STRAVA_CLIENT_ID", "").strip()
     client_secret = os.getenv("STRAVA_CLIENT_SECRET", "").strip()
     anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     discord_token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
+    public_url    = os.getenv("PUBLIC_URL", "").strip()
+    verify_token  = os.getenv("WEBHOOK_VERIFY_TOKEN", "").strip()
+    port          = int(os.getenv("PORT", "8080"))
 
     missing = []
-    if not client_id:
-        missing.append("STRAVA_CLIENT_ID")
-    if not client_secret:
-        missing.append("STRAVA_CLIENT_SECRET")
-    if not anthropic_key:
-        missing.append("ANTHROPIC_API_KEY")
-    if not discord_token:
-        missing.append("DISCORD_BOT_TOKEN")
+    if not client_id:     missing.append("STRAVA_CLIENT_ID")
+    if not client_secret: missing.append("STRAVA_CLIENT_SECRET")
+    if not anthropic_key: missing.append("ANTHROPIC_API_KEY")
+    if not discord_token: missing.append("DISCORD_BOT_TOKEN")
 
     if missing:
         print("Error: Missing required environment variables:")
@@ -530,7 +639,15 @@ def main():
         print("\nAdd them to your .env file.")
         sys.exit(1)
 
-    run_bot(discord_token, client_id, client_secret, anthropic_key)
+    if not public_url or not verify_token:
+        print("Warning: PUBLIC_URL or WEBHOOK_VERIFY_TOKEN not set — real-time Strava sync disabled.")
+
+    asyncio.run(run_bot(
+        discord_token, client_id, client_secret, anthropic_key,
+        public_url=public_url or None,
+        verify_token=verify_token or None,
+        port=port,
+    ))
 
 
 if __name__ == "__main__":
