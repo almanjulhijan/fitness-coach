@@ -380,16 +380,26 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 goals_path = Path("knowledge_base/goals_running.md")
                 goals_content = goals_path.read_text(encoding="utf-8") if goals_path.exists() else ""
 
-                embed, summary = await generate_weekly_analysis(
+                embed, insight, summary = await generate_weekly_analysis(
                     activities=state["activities"],
                     strava=strava,
                     kb_content=kb,
                     goals_content=goals_content,
                     claude_client=claude,
                 )
-                await channel.send(embed=embed)
-                # Inject summary into channel history so follow-up @mentions have context
-                history[channel.id].append({"role": "assistant", "content": summary})
+                msg = await channel.send(embed=embed)
+
+                # Create thread from the embed message
+                week_label = datetime.now(WIB).strftime("%-d %b")
+                thread = await msg.create_thread(name=f"Weekly Review — {week_label}")
+
+                # Send full insight inside the thread (no truncation, split at 2000)
+                if insight:
+                    for chunk in [insight[i:i+2000] for i in range(0, len(insight), 2000)]:
+                        await thread.send(chunk)
+
+                # Inject summary into thread history so @mentions in thread have context
+                history[thread.id].append({"role": "assistant", "content": summary})
             except Exception as e:
                 await channel.send(f"❌ Weekly analysis gagal: {e}")
 

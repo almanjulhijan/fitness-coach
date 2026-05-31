@@ -600,10 +600,6 @@ def _build_embed(
     if goal_reflection:
         embed.add_field(name="Goal reflection", value=_trunc(goal_reflection), inline=False)
 
-    # Claude insight + recommendation
-    if insight:
-        embed.add_field(name="Insight & rekomendasi", value=_trunc(insight), inline=False)
-
     embed.set_footer(
         text=f"{run_count} runs · {gym_count} gym · fitness-coach weekly digest · "
              f"{week_start.strftime('%-d %b')} – {week_end.strftime('%-d %b %Y')}"
@@ -620,7 +616,7 @@ async def generate_weekly_analysis(
     goals_content: str,
     claude_client: anthropic.Anthropic,
     weight_kg: Optional[float] = None,
-) -> tuple[discord.Embed, str]:
+) -> tuple[discord.Embed, str, str]:
     """Aggregate a full week of run + gym data and return a Discord embed."""
     week_start, week_end = _week_range(weeks_ago=0)
     prev_start, prev_end = _week_range(weeks_ago=1)
@@ -708,4 +704,4 @@ async def generate_weekly_analysis(
     ]
     summary = "\n".join(l for l in summary_lines if l)
 
-    return embed, summary
+    return embed, insight, summary
