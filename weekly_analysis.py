@@ -447,8 +447,11 @@ def _build_prompt(
     avg_adj_pace, prev_avg_adj_pace, avg_hr,
     weather_insight, tod_analysis, gym_flags,
     goal_progress, weight_kg, goals_content, kb_content,
+    week_start, week_end,
 ) -> str:
-    lines = ["## Weekly Training Data"]
+    display_end = min(datetime.now(WIB), week_end)
+    week_label = f"{week_start.strftime('%-d %b')} – {display_end.strftime('%-d %b %Y')}"
+    lines = [f"## Weekly Training Data ({week_label})"]
     lines.append(f"- Total km: {total_km:.1f} (vs {prev_km:.1f} minggu lalu)")
     lines.append(f"- Run sessions: {run_count}, Gym sessions: {gym_count}")
     if avg_hr:
@@ -483,9 +486,11 @@ def _build_prompt(
         "Tulis 3–4 kalimat insight yang spesifik dan actionable. "
         "Lalu berikan rekomendasi konkret untuk minggu depan: target km, komposisi easy vs quality, "
         "dan scheduling gym jika relevan. Reference angka aktual. Jangan generik.\n\n"
-        "PENTING: Jangan pakai tabel markdown (| kolom |). "
-        "Gunakan **bold** untuk label, bullet list untuk daftar. "
-        "Format harus Discord-friendly.\n\n"
+        "PENTING FORMAT:\n"
+        "- Jangan tulis heading (# atau ##) — judul sudah diset otomatis\n"
+        "- Jangan pakai tabel markdown (| kolom |)\n"
+        "- Gunakan **bold** untuk label, bullet list untuk daftar\n"
+        "- Maksimal 400 kata\n\n"
         f"## Athlete Profile\n{kb_content or '(no profile)'}\n\n"
         f"## Training Goals\n{goals_content or '(no goals)'}\n\n"
         f"{data_block}"
@@ -677,6 +682,7 @@ async def generate_weekly_analysis(
         avg_hr=avg_hr, weather_insight=weather_insight, tod_analysis=tod_analysis,
         gym_flags=gym_flags, goal_progress=goal_progress,
         weight_kg=weight_kg, goals_content=goals_content, kb_content=kb_content,
+        week_start=week_start, week_end=week_end,
     )
     insight = _generate_insight(prompt, claude_client)
 
