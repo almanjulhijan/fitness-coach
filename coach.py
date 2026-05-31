@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Strava Training Coach — Discord bot powered by Claude + Strava data."""
 
-import json
+import asyncio
 import os
 import re
 import sys
@@ -20,6 +20,7 @@ load_dotenv()
 
 MODEL = "claude-haiku-4-5"
 KB_DIR = Path("knowledge_base")
+ABOUT_ME_FILE = KB_DIR / "about_me.md"
 MAX_TOKENS = 2048
 MAX_HISTORY = 20  # max messages kept per channel
 
@@ -48,10 +49,88 @@ TOOLS = [
             "required": ["goals"],
         },
     },
+    {
+        "name": "propose_profile_update",
+        "description": (
+            "Propose updating a field in the athlete's profile (about_me.md). "
+            "Call this when the user mentions updated personal data: weight, HR zones, "
+            "training paces, injuries, equipment, etc. "
+            "The athlete will be shown a confirmation button before anything is saved. "
+            "Only propose one field at a time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "field": {
+                    "type": "string",
+                    "description": "Field name as in about_me.md, e.g. 'Weight', 'Max HR', 'Easy pace (Zone 2)'",
+                },
+                "value": {
+                    "type": "string",
+                    "description": "New value to set, e.g. '73 kg', '187', '5:45/km'",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "One-line reason for the proposed update",
+                },
+            },
+            "required": ["field", "value", "reason"],
+        },
+    },
 ]
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Profile helpers ─────────────────────────────────────────────────────────────
+
+def get_profile_field(field):
+    """Read current value of a **Field:** line from about_me.md."""
+    if not ABOUT_ME_FILE.exists():
+        return None
+    # Match value on same line only (no newline crossing)
+    pattern = re.compile(r'\*\*' + re.escape(field) + r':\*\*[^\S\n]*([^\n]*)')
+    for line in ABOUT_ME_FILE.read_text(encoding="utf-8").splitlines():
+        m = pattern.search(line)
+        if m:
+            val = m.group(1).strip()
+            return val if val else None
+    return None
+
+
+def update_profile_field(field, value):
+    """Update or append a **Field:** value in about_me.md."""
+    KB_DIR.mkdir(exist_ok=True)
+    if not ABOUT_ME_FILE.exists():
+        ABOUT_ME_FILE.write_text(
+            "# About Me\n\n- **{}:** {}\n".format(field, value), encoding="utf-8"
+        )
+        return
+    text = ABOUT_ME_FILE.read_text(encoding="utf-8")
+    # Match **Field:** + rest of line (no newline crossing), replace whole thing
+    pattern = r'\*\*' + re.escape(field) + r':\*\*[^\n]*'
+    replacement = '**{}:** {}'.format(field, value)
+    new_text, n = re.subn(pattern, replacement, text)
+    if n == 0:
+        new_text = text.rstrip() + "\n- **{}:** {}\n".format(field, value)
+    ABOUT_ME_FILE.write_text(new_text, encoding="utf-8")
+
+
+def extract_strava_profile_updates(athlete, activities):
+    """Return {field: (old_value, new_value)} for fields that differ from about_me.md."""
+    candidates = {}
+    if athlete.get("weight"):
+        candidates["Weight"] = "{:.1f} kg".format(athlete["weight"])
+    max_hrs = [a["max_heartrate"] for a in activities if a.get("max_heartrate")]
+    if max_hrs:
+        candidates["Max HR"] = str(int(max(max_hrs)))
+    updates = {}
+    for field, new_val in candidates.items():
+        current = get_profile_field(field)
+        if current != new_val:
+            updates[field] = (current, new_val)
+    return updates
+
+
+# ── Goal helpers & KB ───────────────────────────────────────────────────────────
 
 def _category_slug(category_name):
     slug = category_name.lower().strip()
@@ -114,6 +193,12 @@ You have tools to read and update the athlete's goals for this sport category. U
 - When asked about goals, call get_goals or refer to the goals already in your context
 - Always confirm after saving: tell the athlete what you saved
 
+## Profile management
+You have a tool to propose profile updates (propose_profile_update). Use it when:
+- The athlete mentions new personal data: weight, HR zones, training paces, injuries, equipment, etc.
+- Only propose one field at a time — the athlete will confirm via button before it's saved
+- After confirmation or rejection, continue the conversation naturally
+
 ## Communication style
 - Conversational but precise — reference specific activities, dates, and numbers from the data
 - Keep responses focused and actionable; avoid walls of generic text
@@ -143,6 +228,7 @@ def build_system_prompt_for_category(category_name, kb_content, activities_summa
 
 
 def load_strava_data(client_id, client_secret):
+    """Returns (summary_str, athlete_dict, activities_list)."""
     tokens = get_valid_token(client_id, client_secret)
     strava = StravaClient(tokens["access_token"])
     athlete = strava.get_athlete()
@@ -150,7 +236,39 @@ def load_strava_data(client_id, client_secret):
     name = "{} {}".format(athlete.get("firstname", ""), athlete.get("lastname", "")).strip()
     print("Athlete: {}".format(name) if name else "Athlete loaded")
     print("Loaded {} activities from the last 30 days.".format(len(activities)))
-    return strava.format_activities_summary(activities, athlete=athlete)
+    summary = strava.format_activities_summary(activities, athlete=athlete)
+    return summary, athlete, activities
+
+
+# ── Discord UI ──────────────────────────────────────────────────────────────────
+
+class ProfileUpdateView(discord.ui.View):
+    """Button view for confirming a profile field update."""
+
+    def __init__(self, field, value, on_confirm, on_cancel):
+        super().__init__(timeout=60)
+        self.field = field
+        self.value = value
+        self._on_confirm = on_confirm
+        self._on_cancel = on_cancel
+
+    @discord.ui.button(label="✅ Simpan", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        self._on_confirm()
+        await interaction.response.edit_message(
+            content="✅ Profile updated: **{}** → **{}**".format(self.field, self.value),
+            view=None,
+        )
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.stop()
+        self._on_cancel()
+        await interaction.response.edit_message(content="❌ Dibatalkan.", view=None)
+
+    async def on_timeout(self):
+        self._on_cancel()
 
 
 # ── Discord bot ────────────────────────────────────────────────────────────────
@@ -160,7 +278,7 @@ def run_bot(discord_token, client_id, client_secret, anthropic_key):
 
     print("\n=== Strava Training Coach (Discord) ===")
     print("Loading Strava data...")
-    activities_summary = load_strava_data(client_id, client_secret)
+    activities_summary, athlete, activities = load_strava_data(client_id, client_secret)
     kb_content = load_knowledge_base()
     if not kb_content:
         print("Tip: Edit knowledge_base/about_me.md to give your coach personal context.")
@@ -168,6 +286,8 @@ def run_bot(discord_token, client_id, client_secret, anthropic_key):
     state = {
         "activities_summary": activities_summary,
         "kb_content": kb_content,
+        "athlete": athlete,
+        "activities": activities,
     }
 
     # Per-channel conversation history: {channel_id: [{"role": ..., "content": ...}]}
@@ -177,21 +297,46 @@ def run_bot(discord_token, client_id, client_secret, anthropic_key):
     intents.message_content = True
     bot = commands.Bot(command_prefix="!", intents=intents)
 
+    async def apply_strava_profile_updates(athlete, activities):
+        """Auto-update about_me.md from Strava data and notify #feed if anything changed."""
+        updates = extract_strava_profile_updates(athlete, activities)
+        if not updates:
+            return
+        for field, (_, new_val) in updates.items():
+            update_profile_field(field, new_val)
+        state["kb_content"] = load_knowledge_base()
+        feed_channel = discord.utils.find(
+            lambda c: isinstance(c, discord.TextChannel) and c.name == "feed",
+            bot.get_all_channels(),
+        )
+        if feed_channel:
+            lines = [
+                "- **{}**: {} → **{}**".format(f, old or "—", new)
+                for f, (old, new) in updates.items()
+            ]
+            await feed_channel.send(
+                "📊 **Profile auto-updated dari Strava:**\n" + "\n".join(lines)
+            )
+
     @bot.event
     async def on_ready():
         print("Bot online as {}".format(bot.user))
         print("Mention @{} to chat.".format(bot.user.name))
+        await apply_strava_profile_updates(state["athlete"], state["activities"])
 
     @bot.command(name="refresh")
     async def refresh(ctx):
         """Reload Strava data and reset channel history."""
         async with ctx.typing():
             try:
-                new_summary = load_strava_data(client_id, client_secret)
+                new_summary, new_athlete, new_activities = load_strava_data(client_id, client_secret)
                 new_kb = load_knowledge_base()
                 state["activities_summary"] = new_summary
                 state["kb_content"] = new_kb
+                state["athlete"] = new_athlete
+                state["activities"] = new_activities
                 history[ctx.channel.id].clear()
+                await apply_strava_profile_updates(new_athlete, new_activities)
                 await ctx.send("Strava data refreshed and conversation history cleared!")
             except Exception as e:
                 await ctx.send("Refresh failed: {}".format(e))
@@ -279,6 +424,48 @@ def run_bot(discord_token, client_id, client_secret, anthropic_key):
                                     result = "Goals saved for {}.".format(category_name)
                                 else:
                                     result = "Cannot save goals: channel has no category."
+
+                            elif block.name == "propose_profile_update":
+                                field = block.input["field"]
+                                value = block.input["value"]
+
+                                confirmed_evt = asyncio.Event()
+                                cancelled_evt = asyncio.Event()
+
+                                view = ProfileUpdateView(
+                                    field, value,
+                                    on_confirm=confirmed_evt.set,
+                                    on_cancel=cancelled_evt.set,
+                                )
+                                prompt_msg = await msg.channel.send(
+                                    "Update **{}** → **{}**?".format(field, value),
+                                    view=view,
+                                )
+
+                                done, pending = await asyncio.wait(
+                                    [
+                                        asyncio.create_task(confirmed_evt.wait()),
+                                        asyncio.create_task(cancelled_evt.wait()),
+                                    ],
+                                    timeout=60,
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                                for task in pending:
+                                    task.cancel()
+
+                                if confirmed_evt.is_set():
+                                    update_profile_field(field, value)
+                                    state["kb_content"] = load_knowledge_base()
+                                    system_prompt = build_system_prompt_for_category(
+                                        category_name, state["kb_content"], state["activities_summary"]
+                                    )
+                                    result = "Profile updated: {} = {}.".format(field, value)
+                                else:
+                                    if not done:  # timeout
+                                        await prompt_msg.edit(
+                                            content="⏱️ Timeout, dibatalkan.", view=None
+                                        )
+                                    result = "Update cancelled."
 
                             else:
                                 result = "Unknown tool."
