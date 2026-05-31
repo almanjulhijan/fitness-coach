@@ -2,6 +2,7 @@
 """Strava Training Coach — Discord bot powered by Claude + Strava data."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import os
 import re
 import sys
@@ -23,6 +24,7 @@ load_dotenv()
 
 MODEL = "claude-haiku-4-5"
 KB_DIR = Path("knowledge_base")
+WIB = timezone(timedelta(hours=7))  # Waktu Indonesia Barat (UTC+7)
 ABOUT_ME_FILE = KB_DIR / "about_me.md"
 MAX_TOKENS = 2048
 MAX_HISTORY = 20  # max messages kept per channel
@@ -224,6 +226,9 @@ You have a tool to propose profile updates (propose_profile_update). Use it when
 - Discord formatting: use **bold** for emphasis, keep responses under ~400 words unless detail is needed
 - Ask clarifying questions when context matters
 - Use metric units unless the athlete's profile specifies otherwise"""
+
+    today_str = datetime.now(WIB).strftime("%A, %d %B %Y")
+    coach_section += f"\n\n**Today's date:** {today_str} (WIB)"
 
     sections = [coach_section]
     if kb_content:
@@ -502,8 +507,6 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 # Show what was loaded so user can verify freshness
                 count = len(new_activities)
                 if new_activities:
-                    from datetime import datetime, timezone, timedelta
-                    WIB = timezone(timedelta(hours=7))
                     latest = max(new_activities, key=lambda a: a["start_date"])
                     latest_date = datetime.fromisoformat(
                         latest["start_date"].replace("Z", "+00:00")
