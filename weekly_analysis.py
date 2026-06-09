@@ -24,7 +24,7 @@ WIB = timezone(timedelta(hours=7))
 RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
 GYM_SPORTS = {"WeightTraining", "Workout", "Crossfit"}
 
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 500
 
 DAYS_SHORT = ["SEN", "SEL", "RAB", "KAM", "JUM", "SAB", "MIN"]

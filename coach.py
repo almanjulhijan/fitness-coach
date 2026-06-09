@@ -25,7 +25,7 @@ from weekly_analysis import generate_weekly_analysis
 
 load_dotenv()
 
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-sonnet-4-6"
 KB_DIR = Path("knowledge_base")
 WIB = timezone(timedelta(hours=7))  # Waktu Indonesia Barat (UTC+7)
 ABOUT_ME_FILE = KB_DIR / "about_me.md"

@@ -23,7 +23,7 @@ WIB = timezone(timedelta(hours=7))
 
 load_dotenv()
 
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-sonnet-4-6"
 KB_DIR = Path("knowledge_base")
 MAX_TOKENS = 2048
 MAX_HISTORY = 20  # max messages kept per channel
