@@ -596,8 +596,46 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         history[ctx.channel.id].clear()
         await ctx.send("Conversation history cleared for this channel.")
 
-    @bot.event
-    async def on_message(msg):
+async def _seed_history_from_discord(channel, bot_user, before_msg, limit=10):
+    """Read recent channel messages to seed in-memory history after a bot restart."""
+    raw = []
+    async for m in channel.history(limit=limit * 4, before=before_msg, oldest_first=False):
+        raw.append(m)
+    raw.reverse()
+
+    result = []
+    for m in raw:
+        if m.author == bot_user:
+            if m.embeds and not m.content.strip():
+                continue  # skip pure-embed posts (post-run cards, weekly review)
+            text = m.content.strip()
+            if text:
+                result.append({"role": "assistant", "content": text})
+        elif not m.author.bot and bot_user in m.mentions:
+            user_text = m.content
+            for mention in m.mentions:
+                user_text = user_text.replace("<@{}>".format(mention.id), "").replace(
+                    "<@!{}>".format(mention.id), ""
+                )
+            user_text = user_text.strip()
+            if user_text:
+                result.append({"role": "user", "content": user_text})
+
+    # Merge consecutive same-role messages (Claude requires alternating roles)
+    cleaned = []
+    for entry in result:
+        if cleaned and cleaned[-1]["role"] == entry["role"]:
+            cleaned[-1]["content"] += "\n" + entry["content"]
+        else:
+            cleaned.append(dict(entry))
+
+    # Claude requires first message to be from user
+    while cleaned and cleaned[0]["role"] == "assistant":
+        cleaned.pop(0)
+
+    return cleaned[-MAX_HISTORY:]
+
+
         await bot.process_commands(msg)
 
         if msg.author.bot:
@@ -623,6 +661,12 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             category_name = msg.channel.category.name if msg.channel.category else None
 
         channel_history = history[msg.channel.id]
+
+        # On cold start (bot restarted), seed context from recent Discord messages
+        if not channel_history:
+            seeded = await _seed_history_from_discord(msg.channel, bot.user, before_msg=msg)
+            channel_history.extend(seeded)
+
         channel_history.append({"role": "user", "content": user_text})
 
         if len(channel_history) > MAX_HISTORY:
