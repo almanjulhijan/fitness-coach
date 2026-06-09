@@ -342,6 +342,46 @@ async def ensure_webhook_registered(client_id, client_secret, public_url, verify
 
 # ── Discord bot ────────────────────────────────────────────────────────────────
 
+async def _seed_history_from_discord(channel, bot_user, before_msg, limit=10):
+    """Read recent channel messages to seed in-memory history after a bot restart."""
+    raw = []
+    async for m in channel.history(limit=limit * 4, before=before_msg, oldest_first=False):
+        raw.append(m)
+    raw.reverse()
+
+    result = []
+    for m in raw:
+        if m.author == bot_user:
+            if m.embeds and not m.content.strip():
+                continue  # skip pure-embed posts (post-run cards, weekly review)
+            text = m.content.strip()
+            if text:
+                result.append({"role": "assistant", "content": text})
+        elif not m.author.bot and bot_user in m.mentions:
+            user_text = m.content
+            for mention in m.mentions:
+                user_text = user_text.replace("<@{}>".format(mention.id), "").replace(
+                    "<@!{}>".format(mention.id), ""
+                )
+            user_text = user_text.strip()
+            if user_text:
+                result.append({"role": "user", "content": user_text})
+
+    # Merge consecutive same-role messages (Claude requires alternating roles)
+    cleaned = []
+    for entry in result:
+        if cleaned and cleaned[-1]["role"] == entry["role"]:
+            cleaned[-1]["content"] += "\n" + entry["content"]
+        else:
+            cleaned.append(dict(entry))
+
+    # Claude requires first message to be from user
+    while cleaned and cleaned[0]["role"] == "assistant":
+        cleaned.pop(0)
+
+    return cleaned[-MAX_HISTORY:]
+
+
 async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                   public_url=None, verify_token=None, port=8080):
     claude = anthropic.Anthropic(api_key=anthropic_key)
@@ -595,46 +635,6 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         """Clear conversation history for this channel."""
         history[ctx.channel.id].clear()
         await ctx.send("Conversation history cleared for this channel.")
-
-async def _seed_history_from_discord(channel, bot_user, before_msg, limit=10):
-    """Read recent channel messages to seed in-memory history after a bot restart."""
-    raw = []
-    async for m in channel.history(limit=limit * 4, before=before_msg, oldest_first=False):
-        raw.append(m)
-    raw.reverse()
-
-    result = []
-    for m in raw:
-        if m.author == bot_user:
-            if m.embeds and not m.content.strip():
-                continue  # skip pure-embed posts (post-run cards, weekly review)
-            text = m.content.strip()
-            if text:
-                result.append({"role": "assistant", "content": text})
-        elif not m.author.bot and bot_user in m.mentions:
-            user_text = m.content
-            for mention in m.mentions:
-                user_text = user_text.replace("<@{}>".format(mention.id), "").replace(
-                    "<@!{}>".format(mention.id), ""
-                )
-            user_text = user_text.strip()
-            if user_text:
-                result.append({"role": "user", "content": user_text})
-
-    # Merge consecutive same-role messages (Claude requires alternating roles)
-    cleaned = []
-    for entry in result:
-        if cleaned and cleaned[-1]["role"] == entry["role"]:
-            cleaned[-1]["content"] += "\n" + entry["content"]
-        else:
-            cleaned.append(dict(entry))
-
-    # Claude requires first message to be from user
-    while cleaned and cleaned[0]["role"] == "assistant":
-        cleaned.pop(0)
-
-    return cleaned[-MAX_HISTORY:]
-
 
     @bot.event
     async def on_message(msg):
