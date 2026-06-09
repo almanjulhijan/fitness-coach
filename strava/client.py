@@ -132,15 +132,11 @@ def _format_single_activity(act: dict) -> str:
             sec_per_100m = moving / (dist_m / 100)
             pace_str = f" | {int(sec_per_100m // 60)}:{int(sec_per_100m % 60):02d}/100m"
 
-    # Heart rate
+    # Heart rate — use average only; max HR is a momentary spike and misleads effort classification
     hr_str = ""
     avg_hr = act.get("average_heartrate")
-    max_hr = act.get("max_heartrate")
     if avg_hr:
-        hr_str = f" | HR {int(avg_hr)}"
-        if max_hr:
-            hr_str += f"/{int(max_hr)}"
-        hr_str += " bpm"
+        hr_str = f" | avg HR {int(avg_hr)} bpm"
 
     # Elevation
     elev_str = ""
