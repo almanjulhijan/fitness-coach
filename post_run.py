@@ -12,7 +12,7 @@ WIB = timezone(timedelta(hours=7))
 
 RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
 
-MODEL = "claude-haiku-4-5"
+MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 600
 
 SPORT_EMOJI = {
