@@ -299,6 +299,7 @@ def compute_training_load(activities: list[dict]) -> dict:
     tw_km = sum(a.get("distance", 0) for a in this_week) / 1000
     lw_km = sum(a.get("distance", 0) for a in last_week) / 1000
     change_pct = round((tw_km - lw_km) / lw_km * 100) if lw_km else None
+    days_into_week = (now - week_start).days
 
     return {
         "this_week_km": round(tw_km, 1),
@@ -306,6 +307,7 @@ def compute_training_load(activities: list[dict]) -> dict:
         "change_pct": change_pct,
         "this_week_runs": len(this_week),
         "last_week_runs": len(last_week),
+        "days_into_week": days_into_week,
     }
 
 

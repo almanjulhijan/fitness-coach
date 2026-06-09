@@ -137,13 +137,18 @@ def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals
         lines += ["", "## Aerobic decoupling: {}%".format(decoupling)]
 
     if load:
+        days_into = load.get("days_into_week", 7)
         lines += [
             "",
             "## Training load",
             "- This week: {} km ({} runs)".format(load.get("this_week_km"), load.get("this_week_runs")),
             "- Last week: {} km ({} runs)".format(load.get("last_week_km"), load.get("last_week_runs")),
         ]
-        if load.get("change_pct") is not None:
+        if days_into <= 2:
+            lines.append(
+                "- Week is only {} day(s) old — do NOT compare or comment on weekly volume trend.".format(days_into)
+            )
+        elif load.get("change_pct") is not None:
             lines.append("- Week-over-week change: {}{}%".format(
                 "+" if load["change_pct"] >= 0 else "", load["change_pct"]
             ))
@@ -204,28 +209,38 @@ def _generate_goal_alignment(
     training_load = enriched.get("training_load") or {}
     pace_sec = enriched.get("pace_sec_km")
 
+    days_into = training_load.get("days_into_week", 7)
     activity_summary = [
         "- Distance: {:.2f} km".format(dist_km),
         "- Duration: {}".format(_fmt_duration(moving)),
         "- Pace: {}".format(_fmt_pace(pace_sec) + "/km" if pace_sec else "unknown"),
         "- Avg HR: {} bpm".format(int(avg_hr)) if avg_hr else "",
         "- HR zones: {}".format(", ".join("{} {}%".format(z, p) for z, p in hr_zones.items())) if hr_zones else "",
-        "- This week: {} km ({} runs)".format(
-            training_load.get("this_week_km", 0), training_load.get("this_week_runs", 0)
+        "- This week so far: {} km ({} runs) — day {} of the week".format(
+            training_load.get("this_week_km", 0),
+            training_load.get("this_week_runs", 0),
+            days_into,
         ),
     ]
     activity_summary = "\n".join(l for l in activity_summary if l)
+
+    weekly_volume_instruction = (
+        "SKIP weekly volume/frequency check — it is only day {} of the week, "
+        "not enough data to judge weekly load yet.".format(days_into)
+        if days_into <= 2
+        else "weekly volume/frequency"
+    )
 
     prompt = (
         "Given these training goals and this single run's data, return a JSON array "
         "of 3-4 goal alignment checks. Each item must have:\n"
         '- "status": "ok", "warning", or "flag"\n'
         '- "text": one concise line in Bahasa Indonesia with specific numbers\n\n'
-        "Focus on: easy run HR zone ratio, pace vs goal pace, weekly volume/frequency, "
+        "Focus on: easy run HR zone ratio, pace vs goal pace, {}, "
         "intensity balance. Be specific with numbers. Return ONLY valid JSON, no prose.\n\n"
         "## Training Goals\n{}\n\n"
         "## This Run\n{}"
-    ).format(goals_content, activity_summary)
+    ).format(weekly_volume_instruction, goals_content, activity_summary)
 
     try:
         response = claude_client.messages.create(
@@ -409,7 +424,7 @@ def build_embed(activity: dict, enriched: dict, insight: str, goal_checks: list 
     if hr_zones and moving:
         recovery_str = _estimate_recovery_hours(hr_zones, decoupling, moving)
         footer_parts.append("Est. recovery {}".format(recovery_str))
-    if training_load.get("change_pct") is not None:
+    if training_load.get("change_pct") is not None and training_load.get("days_into_week", 7) > 2:
         change = training_load["change_pct"]
         sign = "+" if change >= 0 else ""
         footer_parts.append("Load spike {}{}% vs minggu lalu".format(sign, change))
