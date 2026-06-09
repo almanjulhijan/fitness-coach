@@ -636,6 +636,8 @@ async def _seed_history_from_discord(channel, bot_user, before_msg, limit=10):
     return cleaned[-MAX_HISTORY:]
 
 
+    @bot.event
+    async def on_message(msg):
         await bot.process_commands(msg)
 
         if msg.author.bot:
