@@ -631,8 +631,8 @@ async def generate_weekly_analysis(
     weight_kg: Optional[float] = None,
 ) -> tuple[discord.Embed, str, str]:
     """Aggregate a full week of run + gym data and return a Discord embed."""
-    week_start, week_end = _week_range(weeks_ago=0)
-    prev_start, prev_end = _week_range(weeks_ago=1)
+    week_start, week_end = _week_range(weeks_ago=1)
+    prev_start, prev_end = _week_range(weeks_ago=2)
 
     this_runs = _filter_activities(activities, week_start, week_end, RUN_SPORTS)
     prev_runs = _filter_activities(activities, prev_start, prev_end, RUN_SPORTS)
