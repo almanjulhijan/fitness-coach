@@ -942,36 +942,67 @@ async def generate_zone2_review(
         bdate = datetime.fromisoformat(
             best_z2_run["activity"]["start_date"].replace("Z", "+00:00")
         ).astimezone(WIB).strftime("%-d %b")
+        dc_str = f"dc {bdc}%" if bdc is not None else ""
         embed.add_field(
             name="Best Zone 2 run",
-            value=f"**{_fmt_pace(bp)}/km** @ HR {bhr} · {bdist:.1f} km · dc {bdc}% · {bdate}",
+            value=f"**{_fmt_pace(bp)}/km** (adjusted) @ HR {bhr} · {bdist:.1f} km · {dc_str} · {bdate}",
             inline=False,
         )
 
-    # Progress: earliest vs latest
+    # Progress: earliest vs latest (normalized)
     if earliest_z2 and latest_z2:
         def _z2_snapshot(r):
-            p = r["adj_pace_sec"] or r["pace_sec"]
+            adj = r["adj_pace_sec"]
+            raw = r["pace_sec"]
             hr = int(r["activity"]["average_heartrate"])
             dc = r["decoupling"]
+            dist = r["activity"].get("distance", 0) / 1000
             dt = datetime.fromisoformat(r["activity"]["start_date"].replace("Z", "+00:00")).astimezone(WIB)
-            return p, hr, dc, dt
+            weather = r.get("weather") or {}
+            temp = weather.get("temp_c")
+            return adj, raw, hr, dc, dist, dt, temp
 
-        ep, ehr, edc, edt = _z2_snapshot(earliest_z2)
-        lp, lhr, ldc, ldt = _z2_snapshot(latest_z2)
+        e_adj, e_raw, ehr, edc, edist, edt, etemp = _z2_snapshot(earliest_z2)
+        l_adj, l_raw, lhr, ldc, ldist, ldt, ltemp = _z2_snapshot(latest_z2)
+
+        # Use adjusted pace for both if available, otherwise raw for both
+        if e_adj and l_adj:
+            ep, lp = e_adj, l_adj
+            pace_label = "adjusted"
+        else:
+            ep, lp = e_raw, l_raw
+            pace_label = "raw"
+
+        edc_str = f"dc {edc}%" if edc is not None else "dc —"
+        ldc_str = f"dc {ldc}%" if ldc is not None else "dc —"
+        etemp_str = f" · {round(etemp)}°C" if etemp is not None else ""
+        ltemp_str = f" · {round(ltemp)}°C" if ltemp is not None else ""
+
         pace_diff = ep - lp
-        pace_arrow = "↑" if pace_diff > 0 else ("↓" if pace_diff < 0 else "→")
+        days_span = (ldt - edt).days
 
         progress_lines = [
-            f"**{edt.strftime('%-d %b')}** (awal): {_fmt_pace(ep)}/km · HR {ehr} · dc {edc}%",
-            f"**{ldt.strftime('%-d %b')}** (terkini): {_fmt_pace(lp)}/km · HR {lhr} · dc {ldc}%",
+            f"**{edt.strftime('%-d %b')}** (awal): {_fmt_pace(ep)}/km · HR {ehr} · {edc_str} · {edist:.1f} km{etemp_str}",
+            f"**{ldt.strftime('%-d %b')}** (terkini): {_fmt_pace(lp)}/km · HR {lhr} · {ldc_str} · {ldist:.1f} km{ltemp_str}",
+            f"*Pace: {pace_label} (heat-normalized)*" if pace_label == "adjusted" else "*Pace: raw (weather data tidak lengkap)*",
         ]
-        if pace_diff > 0:
-            progress_lines.append(f"{pace_arrow} Pace membaik **{int(pace_diff)}s/km** dalam {(ldt - edt).days} hari")
-        elif pace_diff < 0:
-            progress_lines.append(f"{pace_arrow} Pace melambat **{int(abs(pace_diff))}s/km** dalam {(ldt - edt).days} hari")
+
+        # Distance-aware comparison
+        dist_diff = abs(edist - ldist)
+        if dist_diff > 2:
+            progress_lines.append(f"*Catatan: jarak berbeda ({edist:.1f} vs {ldist:.1f} km) — pace jarak lebih jauh cenderung lebih lambat*")
+
+        if pace_diff > 5:
+            progress_lines.append(f"↑ Pace membaik **{int(pace_diff)}s/km** dalam {days_span} hari")
+        elif pace_diff < -5:
+            progress_lines.append(f"↓ Pace melambat **{int(abs(pace_diff))}s/km** dalam {days_span} hari")
         else:
-            progress_lines.append(f"→ Pace stabil dalam {(ldt - edt).days} hari")
+            progress_lines.append(f"→ Pace stabil (±{int(abs(pace_diff))}s) dalam {days_span} hari")
+
+        hr_diff = ehr - lhr
+        if abs(hr_diff) > 2:
+            hr_arrow = "↓" if hr_diff > 0 else "↑"
+            progress_lines.append(f"{hr_arrow} HR {'turun' if hr_diff > 0 else 'naik'} **{abs(hr_diff)} bpm** — {'efisiensi membaik' if hr_diff > 0 else 'perlu perhatian'}")
 
         embed.add_field(
             name="Progres: awal → sekarang",
@@ -1005,20 +1036,42 @@ async def generate_zone2_review(
 
     progress_info = ""
     if earliest_z2 and latest_z2:
-        ep = earliest_z2["adj_pace_sec"] or earliest_z2["pace_sec"]
-        ehr = int(earliest_z2["activity"]["average_heartrate"])
-        edc = earliest_z2["decoupling"]
-        edt = datetime.fromisoformat(earliest_z2["activity"]["start_date"].replace("Z", "+00:00")).astimezone(WIB)
-        lp = latest_z2["adj_pace_sec"] or latest_z2["pace_sec"]
-        lhr = int(latest_z2["activity"]["average_heartrate"])
-        ldc = latest_z2["decoupling"]
-        ldt = datetime.fromisoformat(latest_z2["activity"]["start_date"].replace("Z", "+00:00")).astimezone(WIB)
-        pace_diff = ep - lp
+        e_adj_p = earliest_z2["adj_pace_sec"]
+        l_adj_p = latest_z2["adj_pace_sec"]
+        if e_adj_p and l_adj_p:
+            p_ep, p_lp = e_adj_p, l_adj_p
+            p_method = "heat-adjusted"
+        else:
+            p_ep = earliest_z2["pace_sec"]
+            p_lp = latest_z2["pace_sec"]
+            p_method = "raw (cuaca tidak lengkap untuk semua run)"
+
+        p_ehr = int(earliest_z2["activity"]["average_heartrate"])
+        p_edc = earliest_z2["decoupling"]
+        p_edist = earliest_z2["activity"].get("distance", 0) / 1000
+        p_etemp = (earliest_z2.get("weather") or {}).get("temp_c")
+        p_edt = datetime.fromisoformat(earliest_z2["activity"]["start_date"].replace("Z", "+00:00")).astimezone(WIB)
+
+        p_lhr = int(latest_z2["activity"]["average_heartrate"])
+        p_ldc = latest_z2["decoupling"]
+        p_ldist = latest_z2["activity"].get("distance", 0) / 1000
+        p_ltemp = (latest_z2.get("weather") or {}).get("temp_c")
+        p_ldt = datetime.fromisoformat(latest_z2["activity"]["start_date"].replace("Z", "+00:00")).astimezone(WIB)
+
+        pace_diff = p_ep - p_lp
+        dc_e = f"{p_edc}%" if p_edc is not None else "N/A"
+        dc_l = f"{p_ldc}%" if p_ldc is not None else "N/A"
+        temp_e = f", {round(p_etemp)}°C" if p_etemp is not None else ""
+        temp_l = f", {round(p_ltemp)}°C" if p_ltemp is not None else ""
+
         progress_info = (
-            f"\n## Progres awal → sekarang\n"
-            f"- Awal ({edt.strftime('%-d %b')}): {_fmt_pace(ep)}/km @ HR {ehr}, decoupling {edc}%\n"
-            f"- Terkini ({ldt.strftime('%-d %b')}): {_fmt_pace(lp)}/km @ HR {lhr}, decoupling {ldc}%\n"
-            f"- Perubahan pace: {'+' if pace_diff > 0 else ''}{int(pace_diff)}s/km dalam {(ldt - edt).days} hari"
+            f"\n## Progres awal → sekarang (normalized: {p_method})\n"
+            f"- Awal ({p_edt.strftime('%-d %b')}): {_fmt_pace(p_ep)}/km @ HR {p_ehr}, dc {dc_e}, {p_edist:.1f} km{temp_e}\n"
+            f"- Terkini ({p_ldt.strftime('%-d %b')}): {_fmt_pace(p_lp)}/km @ HR {p_lhr}, dc {dc_l}, {p_ldist:.1f} km{temp_l}\n"
+            f"- Perubahan pace: {'+' if pace_diff > 0 else ''}{int(pace_diff)}s/km dalam {(p_ldt - p_edt).days} hari\n"
+            f"- Perubahan HR: {'+' if (p_lhr - p_ehr) > 0 else ''}{p_lhr - p_ehr} bpm\n"
+            f"- PENTING: perbandingan ini sudah dinormalisasi. Pertimbangkan jarak ({p_edist:.1f} vs {p_ldist:.1f} km) "
+            f"saat menginterpretasi — jarak lebih jauh cenderung lebih lambat."
         )
 
     prompt = (
