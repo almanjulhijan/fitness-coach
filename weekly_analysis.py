@@ -547,11 +547,27 @@ def _build_prompt(
 
     data_block = "\n".join(lines)
 
+    if is_current_week:
+        now_wib = datetime.now(WIB)
+        days_left = 6 - now_wib.weekday()
+        reco_instruction = (
+            "Data ini adalah minggu yang SEDANG BERJALAN (belum selesai). "
+            f"Masih ada {days_left} hari tersisa di minggu ini. "
+            "Berikan rekomendasi konkret untuk SISA MINGGU INI: "
+            "berapa km lagi yang perlu ditambah, sesi apa yang perlu dilakukan di hari-hari sisa, "
+            "komposisi easy vs quality, dan scheduling gym jika relevan. "
+            "JANGAN rekomendasikan untuk 'minggu depan' — fokus pada sisa minggu ini."
+        )
+    else:
+        reco_instruction = (
+            "Berikan rekomendasi konkret untuk minggu depan: target km, komposisi easy vs quality, "
+            "dan scheduling gym jika relevan."
+        )
+
     return (
         "Kamu adalah personal running coach. Berikan weekly analysis dalam Bahasa Indonesia. "
         "Tulis 3–4 kalimat insight yang spesifik dan actionable. "
-        "Lalu berikan rekomendasi konkret untuk minggu depan: target km, komposisi easy vs quality, "
-        "dan scheduling gym jika relevan. Reference angka aktual. Jangan generik.\n\n"
+        f"{reco_instruction} Reference angka aktual. Jangan generik.\n\n"
         "PENTING FORMAT:\n"
         "- Jangan tulis heading (# atau ##) — judul sudah diset otomatis\n"
         "- Jangan pakai tabel markdown (| kolom |)\n"
