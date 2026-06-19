@@ -452,10 +452,12 @@ def _build_prompt(
     avg_adj_pace, prev_avg_adj_pace, avg_hr,
     weather_insight, tod_analysis, gym_flags,
     goal_progress, weight_kg, goals_content, kb_content,
-    week_start, week_end,
+    week_start, week_end, is_current_week=False,
 ) -> str:
     display_end = min(datetime.now(WIB), week_end)
     week_label = f"{week_start.strftime('%-d %b')} – {display_end.strftime('%-d %b %Y')}"
+    if is_current_week:
+        week_label += " (minggu berjalan, belum selesai)"
     lines = [f"## Weekly Training Data ({week_label})"]
     lines.append(f"- Total km: {total_km:.1f} (vs {prev_km:.1f} minggu lalu)")
     lines.append(f"- Run sessions: {run_count}, Gym sessions: {gym_count}")
@@ -523,11 +525,14 @@ def _build_embed(
     prev_avg_decoupling, avg_adj_pace, prev_avg_adj_pace,
     weather_insight, tod_analysis, gym_flags, schedule_grid,
     goal_progress, weight_kg, insight, goal_reflection,
+    is_current_week=False,
 ) -> discord.Embed:
     week_end = week_start + timedelta(days=6)
     now_wib = datetime.now(WIB)
     display_end = min(now_wib, week_end)
     title = f"Weekly Review — {week_start.strftime('%-d %b')} – {display_end.strftime('%-d %b')}"
+    if is_current_week:
+        title += " (in progress)"
 
     gym_types = [g["classified"]["type"] for g in gym_details]
     gym_subtitle = " · ".join(
@@ -536,7 +541,10 @@ def _build_embed(
         if gym_types.count(t) > 0
     )
 
-    desc = "Running + Gym · 7 hari terakhir"
+    days_elapsed = (now_wib - week_start).days + 1 if is_current_week else 7
+    desc = f"Running + Gym · {days_elapsed} hari"
+    if is_current_week:
+        desc += " (minggu berjalan)"
     if weight_kg:
         desc += f" · ⚖️ {weight_kg} kg"
     embed = discord.Embed(title=title, description=desc, color=0xFC4C02)
@@ -629,10 +637,14 @@ async def generate_weekly_analysis(
     goals_content: str,
     claude_client: anthropic.Anthropic,
     weight_kg: Optional[float] = None,
+    weeks_ago: int = 1,
 ) -> tuple[discord.Embed, str, str]:
-    """Aggregate a full week of run + gym data and return a Discord embed."""
-    week_start, week_end = _week_range(weeks_ago=1)
-    prev_start, prev_end = _week_range(weeks_ago=2)
+    """Aggregate a full week of run + gym data and return a Discord embed.
+
+    weeks_ago=0 → current (in-progress) week, weeks_ago=1 → last completed week.
+    """
+    week_start, week_end = _week_range(weeks_ago=weeks_ago)
+    prev_start, prev_end = _week_range(weeks_ago=weeks_ago + 1)
 
     this_runs = _filter_activities(activities, week_start, week_end, RUN_SPORTS)
     prev_runs = _filter_activities(activities, prev_start, prev_end, RUN_SPORTS)
@@ -688,6 +700,7 @@ async def generate_weekly_analysis(
         gym_flags=gym_flags, goal_progress=goal_progress,
         weight_kg=weight_kg, goals_content=goals_content, kb_content=kb_content,
         week_start=week_start, week_end=week_end,
+        is_current_week=(weeks_ago == 0),
     )
     insight = _generate_insight(prompt, claude_client)
 
@@ -700,7 +713,7 @@ async def generate_weekly_analysis(
         prev_avg_adj_pace=prev_avg_adj_pace, weather_insight=weather_insight,
         tod_analysis=tod_analysis, gym_flags=gym_flags, schedule_grid=schedule_grid,
         goal_progress=goal_progress, weight_kg=weight_kg, insight=insight,
-        goal_reflection=goal_reflection,
+        goal_reflection=goal_reflection, is_current_week=(weeks_ago == 0),
     )
 
     # Build plain-text summary for conversation history injection

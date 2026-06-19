@@ -420,7 +420,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
     weekly_category = os.getenv("WEEKLY_REVIEW_CATEGORY", "Running")
     weekly_channel  = os.getenv("WEEKLY_REVIEW_CHANNEL", "review")
 
-    async def run_weekly_analysis(channel: discord.TextChannel) -> None:
+    async def run_weekly_analysis(channel: discord.TextChannel, weeks_ago: int = 1) -> None:
         """Generate and post weekly analysis embed."""
         async with channel.typing():
             try:
@@ -436,6 +436,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                     kb_content=kb,
                     goals_content=goals_content,
                     claude_client=claude,
+                    weeks_ago=weeks_ago,
                 )
                 msg = await channel.send(embed=embed)
 
@@ -470,7 +471,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         if not channel:
             print(f"⚠️  Channel #{weekly_channel} in '{weekly_category}' not found.")
             return
-        await run_weekly_analysis(channel)
+        await run_weekly_analysis(channel, weeks_ago=1)
 
     @bot.tree.command(name="weekly-review", description="Generate weekly training analysis")
     async def weekly_review_command(interaction: discord.Interaction) -> None:
@@ -478,7 +479,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             await interaction.response.send_message("⚠️ No data loaded yet. Try `!refresh` first.")
             return
         await interaction.response.send_message("Starting weekly review...")
-        await run_weekly_analysis(interaction.channel)
+        await run_weekly_analysis(interaction.channel, weeks_ago=0)
 
     async def apply_strava_profile_updates(athlete, activities):
         """Auto-update about_me.md from Strava data and notify #feed if anything changed."""
