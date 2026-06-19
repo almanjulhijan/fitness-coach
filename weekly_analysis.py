@@ -811,3 +811,193 @@ async def generate_weekly_analysis(
     summary = "\n".join(l for l in summary_lines if l)
 
     return embed, insight, summary
+
+
+# ── Zone 2 progress review ────────────────────────────────────────────────────
+
+async def generate_zone2_review(
+    activities: list[dict],
+    kb_content: str,
+    goals_content: str,
+    claude_client: anthropic.Anthropic,
+) -> tuple[discord.Embed, str]:
+    """Analyze Zone 2 running trend over last 30 days, return embed + insight."""
+    runs = [
+        a for a in activities
+        if (a.get("sport_type") or a.get("type", "")) in RUN_SPORTS
+    ]
+    if not runs:
+        embed = discord.Embed(
+            title="Zone 2 Progress Review",
+            description="Tidak ada data lari dalam 30 hari terakhir.",
+            color=0x949ba4,
+        )
+        return embed, ""
+
+    enriched = await enrich_runs(runs)
+    max_hr = _read_max_hr_from_kb()
+    z2_upper = max_hr * 0.75
+
+    # Group runs by week (Mon-Sun)
+    now = datetime.now(WIB)
+    weeks: dict[int, list[dict]] = {}
+    for r in enriched:
+        run_dt = datetime.fromisoformat(
+            r["activity"]["start_date"].replace("Z", "+00:00")
+        ).astimezone(WIB)
+        weeks_ago = (now - run_dt).days // 7
+        weeks.setdefault(weeks_ago, []).append(r)
+
+    # Per-week stats
+    week_stats = []
+    for wk in sorted(weeks.keys()):
+        wk_runs = weeks[wk]
+        z2_runs = [r for r in wk_runs if r["hr_zones"].get("Zone 2", 0) >= 50]
+        all_z2_pct = [r["hr_zones"].get("Zone 2", 0) for r in wk_runs]
+        avg_z2_pct = round(sum(all_z2_pct) / len(all_z2_pct)) if all_z2_pct else 0
+
+        paces = [r["adj_pace_sec"] or r["pace_sec"] for r in wk_runs if r["adj_pace_sec"] or r["pace_sec"]]
+        avg_pace = round(sum(paces) / len(paces)) if paces else None
+
+        z2_paces = [
+            r["adj_pace_sec"] or r["pace_sec"]
+            for r in z2_runs
+            if r["adj_pace_sec"] or r["pace_sec"]
+        ]
+        avg_z2_pace = round(sum(z2_paces) / len(z2_paces)) if z2_paces else None
+
+        hrs = [r["activity"]["average_heartrate"] for r in wk_runs if r["activity"].get("average_heartrate")]
+        avg_hr = round(sum(hrs) / len(hrs)) if hrs else None
+
+        dcs = [r["decoupling"] for r in wk_runs if r["decoupling"] is not None]
+        avg_dc = round(sum(dcs) / len(dcs), 1) if dcs else None
+
+        total_km = sum(r["activity"].get("distance", 0) for r in wk_runs) / 1000
+
+        wk_start = now - timedelta(days=(wk + 1) * 7 - (now.weekday()))
+        wk_label = wk_start.strftime("%-d %b")
+
+        week_stats.append({
+            "week_ago": wk,
+            "label": wk_label,
+            "total_runs": len(wk_runs),
+            "z2_runs": len(z2_runs),
+            "avg_z2_pct": avg_z2_pct,
+            "avg_pace": avg_pace,
+            "avg_z2_pace": avg_z2_pace,
+            "avg_hr": avg_hr,
+            "avg_decoupling": avg_dc,
+            "total_km": round(total_km, 1),
+        })
+
+    # Overall Zone 2 stats
+    all_z2_runs = [r for r in enriched if r["hr_zones"].get("Zone 2", 0) >= 50]
+    total_z2 = len(all_z2_runs)
+    total_runs = len(enriched)
+    z2_ratio = round(total_z2 / total_runs * 100) if total_runs else 0
+
+    best_z2_run = None
+    if all_z2_runs:
+        with_pace = [r for r in all_z2_runs if r["adj_pace_sec"] or r["pace_sec"]]
+        if with_pace:
+            best_z2_run = min(with_pace, key=lambda r: r["adj_pace_sec"] or r["pace_sec"])
+
+    # Build embed
+    embed = discord.Embed(
+        title="🫀 Zone 2 Progress Review",
+        description=f"Analisa {total_runs} run dalam 30 hari terakhir · {total_z2} run dominan Zone 2 ({z2_ratio}%)",
+        color=0x5de08a,
+    )
+
+    # Weekly trend
+    trend_lines = []
+    for ws in reversed(week_stats):
+        pace_str = _fmt_pace(ws["avg_z2_pace"]) + "/km" if ws["avg_z2_pace"] else "—"
+        dc_str = f"{ws['avg_decoupling']}%" if ws["avg_decoupling"] is not None else "—"
+        label = "minggu ini" if ws["week_ago"] == 0 else f"{ws['label']}"
+        trend_lines.append(
+            f"**{label}** — {ws['z2_runs']}/{ws['total_runs']} Z2 · "
+            f"pace {pace_str} · HR {ws['avg_hr'] or '—'} · dc {dc_str} · {ws['total_km']} km"
+        )
+    embed.add_field(
+        name="Trend per minggu",
+        value=_trunc("\n".join(trend_lines)),
+        inline=False,
+    )
+
+    # Best Z2 run
+    if best_z2_run:
+        bp = best_z2_run["adj_pace_sec"] or best_z2_run["pace_sec"]
+        bhr = int(best_z2_run["activity"]["average_heartrate"])
+        bdc = best_z2_run["decoupling"]
+        bdist = best_z2_run["activity"].get("distance", 0) / 1000
+        bdate = datetime.fromisoformat(
+            best_z2_run["activity"]["start_date"].replace("Z", "+00:00")
+        ).astimezone(WIB).strftime("%-d %b")
+        embed.add_field(
+            name="Best Zone 2 run",
+            value=f"**{_fmt_pace(bp)}/km** @ HR {bhr} · {bdist:.1f} km · dc {bdc}% · {bdate}",
+            inline=False,
+        )
+
+    # Target comparison
+    target_gap = ""
+    if best_z2_run:
+        bp = best_z2_run["adj_pace_sec"] or best_z2_run["pace_sec"]
+        gap_sec = bp - 360
+        if gap_sec > 0:
+            target_gap = f"Gap ke target: **{_fmt_pace(gap_sec)}** lebih lambat dari 6:00/km"
+        else:
+            target_gap = "**Target 6:00/km @ HR≤140 sudah tercapai!**"
+    embed.add_field(name="Goal: 6:00/km @ HR≤140", value=target_gap or "Belum ada data Z2", inline=False)
+
+    # Build Claude prompt
+    trend_data = "\n".join(
+        f"- Minggu {ws['label']}: {ws['z2_runs']}/{ws['total_runs']} Z2 runs, "
+        f"avg Z2 pace {_fmt_pace(ws['avg_z2_pace'])}/km, " if ws["avg_z2_pace"] else ""
+        f"avg HR {ws['avg_hr']}, decoupling {ws['avg_decoupling']}%, {ws['total_km']} km"
+        for ws in reversed(week_stats)
+    )
+
+    best_info = ""
+    if best_z2_run:
+        bp = best_z2_run["adj_pace_sec"] or best_z2_run["pace_sec"]
+        best_info = f"Best Z2 run: {_fmt_pace(bp)}/km @ HR {int(best_z2_run['activity']['average_heartrate'])}, decoupling {best_z2_run['decoupling']}%"
+
+    prompt = (
+        "Kamu adalah personal running coach. Analisa progres Zone 2 running atlet ini "
+        "dalam 30 hari terakhir. Bahasa Indonesia.\n\n"
+        "## Athlete Profile\n{}\n\n"
+        "## Training Goals\n{}\n\n"
+        "## Zone 2 Data (30 hari)\n"
+        "- Total: {} run, {} dominan Zone 2 ({}%)\n"
+        "- Max HR atlet: {} bpm, Zone 2 range: {}-{} bpm\n"
+        "{}\n{}\n\n"
+        "## Weekly trend\n{}\n\n"
+        "Berikan analisa dalam format:\n\n"
+        "**Terus lakukan:**\n- (2-3 hal spesifik yang sudah benar)\n\n"
+        "**Stop/kurangi:**\n- (1-2 hal yang perlu dihentikan atau dikurangi)\n\n"
+        "**Mulai lakukan:**\n- (2-3 hal baru yang perlu dilakukan untuk mencapai goal)\n\n"
+        "Reference angka aktual dari data. Jangan generik. Maksimal 350 kata.\n\n"
+        "PENTING FORMAT:\n"
+        "- Jangan tulis heading (# atau ##)\n"
+        "- Jangan pakai tabel markdown (| kolom |)\n"
+        "- Gunakan **bold** untuk label, bullet list untuk daftar"
+    ).format(
+        kb_content or "(no profile)",
+        goals_content or "(no goals)",
+        total_runs, total_z2, z2_ratio,
+        max_hr, int(max_hr * 0.60), int(z2_upper),
+        best_info,
+        f"- Z2 ratio target: ≥80%, current: {z2_ratio}%",
+        trend_data,
+    )
+
+    insight = _generate_insight(prompt, claude_client)
+
+    if insight:
+        embed.add_field(name="Analisa & Rekomendasi", value=_trunc(insight, 1024), inline=False)
+
+    embed.set_footer(text="Data 30 hari terakhir dari Strava")
+
+    return embed, insight

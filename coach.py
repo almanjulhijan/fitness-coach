@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 from strava.auth import get_valid_token
 from strava.client import StravaClient
 from post_run import post_run_analysis
-from weekly_analysis import generate_weekly_analysis
+from weekly_analysis import generate_weekly_analysis, generate_zone2_review
 
 load_dotenv()
 
@@ -480,6 +480,37 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             return
         await interaction.response.send_message("Starting weekly review...")
         await run_weekly_analysis(interaction.channel, weeks_ago=0)
+
+    @bot.tree.command(name="zone2-review", description="Review Zone 2 running progress & trend")
+    async def zone2_review_command(interaction: discord.Interaction) -> None:
+        if not state["activities"]:
+            await interaction.response.send_message("⚠️ No data loaded yet. Try `!refresh` first.")
+            return
+        await interaction.response.send_message("Analyzing Zone 2 progress...")
+
+        async with interaction.channel.typing():
+            try:
+                kb = load_knowledge_base()
+                goals_path = Path("knowledge_base/goals_running.md")
+                goals_content = goals_path.read_text(encoding="utf-8") if goals_path.exists() else ""
+
+                embed, insight = await generate_zone2_review(
+                    activities=state["activities"],
+                    kb_content=kb,
+                    goals_content=goals_content,
+                    claude_client=claude,
+                )
+                msg = await interaction.channel.send(embed=embed)
+
+                if insight and len(insight) > 1024:
+                    thread = await msg.create_thread(name="Zone 2 Progress Detail")
+                    chunks = [insight[i:i+4096] for i in range(0, len(insight), 4096)]
+                    for chunk in chunks:
+                        detail_embed = discord.Embed(description=chunk, color=0x5de08a)
+                        await thread.send(embed=detail_embed)
+                    history[thread.id].append({"role": "assistant", "content": insight})
+            except Exception as e:
+                await interaction.channel.send(f"❌ Zone 2 review gagal: {e}")
 
     async def apply_strava_profile_updates(athlete, activities):
         """Auto-update about_me.md from Strava data and notify #feed if anything changed."""
