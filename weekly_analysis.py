@@ -902,6 +902,14 @@ async def generate_zone2_review(
         if with_pace:
             best_z2_run = min(with_pace, key=lambda r: r["adj_pace_sec"] or r["pace_sec"])
 
+    # Earliest vs latest Z2 comparison
+    z2_with_pace = sorted(
+        [r for r in all_z2_runs if r["adj_pace_sec"] or r["pace_sec"]],
+        key=lambda r: r["activity"]["start_date"],
+    )
+    earliest_z2 = z2_with_pace[0] if z2_with_pace else None
+    latest_z2 = z2_with_pace[-1] if len(z2_with_pace) > 1 else None
+
     # Build embed
     embed = discord.Embed(
         title="🫀 Zone 2 Progress Review",
@@ -940,6 +948,37 @@ async def generate_zone2_review(
             inline=False,
         )
 
+    # Progress: earliest vs latest
+    if earliest_z2 and latest_z2:
+        def _z2_snapshot(r):
+            p = r["adj_pace_sec"] or r["pace_sec"]
+            hr = int(r["activity"]["average_heartrate"])
+            dc = r["decoupling"]
+            dt = datetime.fromisoformat(r["activity"]["start_date"].replace("Z", "+00:00")).astimezone(WIB)
+            return p, hr, dc, dt
+
+        ep, ehr, edc, edt = _z2_snapshot(earliest_z2)
+        lp, lhr, ldc, ldt = _z2_snapshot(latest_z2)
+        pace_diff = ep - lp
+        pace_arrow = "↑" if pace_diff > 0 else ("↓" if pace_diff < 0 else "→")
+
+        progress_lines = [
+            f"**{edt.strftime('%-d %b')}** (awal): {_fmt_pace(ep)}/km · HR {ehr} · dc {edc}%",
+            f"**{ldt.strftime('%-d %b')}** (terkini): {_fmt_pace(lp)}/km · HR {lhr} · dc {ldc}%",
+        ]
+        if pace_diff > 0:
+            progress_lines.append(f"{pace_arrow} Pace membaik **{int(pace_diff)}s/km** dalam {(ldt - edt).days} hari")
+        elif pace_diff < 0:
+            progress_lines.append(f"{pace_arrow} Pace melambat **{int(abs(pace_diff))}s/km** dalam {(ldt - edt).days} hari")
+        else:
+            progress_lines.append(f"→ Pace stabil dalam {(ldt - edt).days} hari")
+
+        embed.add_field(
+            name="Progres: awal → sekarang",
+            value="\n".join(progress_lines),
+            inline=False,
+        )
+
     # Target comparison
     target_gap = ""
     if best_z2_run:
@@ -964,6 +1003,24 @@ async def generate_zone2_review(
         bp = best_z2_run["adj_pace_sec"] or best_z2_run["pace_sec"]
         best_info = f"Best Z2 run: {_fmt_pace(bp)}/km @ HR {int(best_z2_run['activity']['average_heartrate'])}, decoupling {best_z2_run['decoupling']}%"
 
+    progress_info = ""
+    if earliest_z2 and latest_z2:
+        ep = earliest_z2["adj_pace_sec"] or earliest_z2["pace_sec"]
+        ehr = int(earliest_z2["activity"]["average_heartrate"])
+        edc = earliest_z2["decoupling"]
+        edt = datetime.fromisoformat(earliest_z2["activity"]["start_date"].replace("Z", "+00:00")).astimezone(WIB)
+        lp = latest_z2["adj_pace_sec"] or latest_z2["pace_sec"]
+        lhr = int(latest_z2["activity"]["average_heartrate"])
+        ldc = latest_z2["decoupling"]
+        ldt = datetime.fromisoformat(latest_z2["activity"]["start_date"].replace("Z", "+00:00")).astimezone(WIB)
+        pace_diff = ep - lp
+        progress_info = (
+            f"\n## Progres awal → sekarang\n"
+            f"- Awal ({edt.strftime('%-d %b')}): {_fmt_pace(ep)}/km @ HR {ehr}, decoupling {edc}%\n"
+            f"- Terkini ({ldt.strftime('%-d %b')}): {_fmt_pace(lp)}/km @ HR {lhr}, decoupling {ldc}%\n"
+            f"- Perubahan pace: {'+' if pace_diff > 0 else ''}{int(pace_diff)}s/km dalam {(ldt - edt).days} hari"
+        )
+
     prompt = (
         "Kamu adalah personal running coach. Analisa progres Zone 2 running atlet ini "
         "dalam 30 hari terakhir. Bahasa Indonesia.\n\n"
@@ -973,12 +1030,17 @@ async def generate_zone2_review(
         "- Total: {} run, {} dominan Zone 2 ({}%)\n"
         "- Max HR atlet: {} bpm, Zone 2 range: {}-{} bpm\n"
         "{}\n{}\n\n"
-        "## Weekly trend\n{}\n\n"
+        "## Weekly trend\n{}\n"
+        "{}\n\n"
         "Berikan analisa dalam format:\n\n"
+        "**Progres Zone 2:**\n"
+        "Jelaskan perjalanan progres Z2 atlet dari run paling awal sampai sekarang. "
+        "Bandingkan pace, HR, dan decoupling awal vs terkini. "
+        "Apakah membaik, stagnan, atau menurun? Sebutkan angka spesifik.\n\n"
         "**Terus lakukan:**\n- (2-3 hal spesifik yang sudah benar)\n\n"
         "**Stop/kurangi:**\n- (1-2 hal yang perlu dihentikan atau dikurangi)\n\n"
         "**Mulai lakukan:**\n- (2-3 hal baru yang perlu dilakukan untuk mencapai goal)\n\n"
-        "Reference angka aktual dari data. Jangan generik. Maksimal 350 kata.\n\n"
+        "Reference angka aktual dari data. Jangan generik. Maksimal 400 kata.\n\n"
         "PENTING FORMAT:\n"
         "- Jangan tulis heading (# atau ##)\n"
         "- Jangan pakai tabel markdown (| kolom |)\n"
@@ -991,6 +1053,7 @@ async def generate_zone2_review(
         best_info,
         f"- Z2 ratio target: ≥80%, current: {z2_ratio}%",
         trend_data,
+        progress_info,
     )
 
     insight = _generate_insight(prompt, claude_client)
