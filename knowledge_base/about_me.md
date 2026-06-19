@@ -17,8 +17,12 @@
 
 ## Training Zones
 
-- **Max HR:**
-- **Easy pace (Zone 2):**
+- **Max HR:** 191
+- **Zone 1 (Recovery):** < 115 bpm (< 60%)
+- **Zone 2 (Easy/Aerobic):** 115-143 bpm (60-75%)
+- **Zone 3 (Tempo):** 143-162 bpm (75-85%)
+- **Zone 4 (Threshold):** 162-176 bpm (85-92%)
+- **Zone 5 (VO2max):** > 176 bpm (> 92%)
 - **Lactate threshold HR:**
 
 ## Notes
