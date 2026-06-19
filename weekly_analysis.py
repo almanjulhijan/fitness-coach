@@ -319,23 +319,29 @@ def analyze_gym_run_interaction(
     return flags if flags else ["✅ Tidak ada konflik timing gym × lari minggu ini."]
 
 
-def _aerobic_goal_progress(enriched_runs: list[dict]) -> int:
-    """Estimate % progress toward 6:00/km @ HR≤140. Returns 0–100."""
-    target_pace_sec = 360.0  # 6:00/km
-    start_pace_sec = 450.0   # rough starting baseline (~7:30/km)
+def _aerobic_goal_progress(enriched_runs: list[dict]) -> dict:
+    """Evaluate training alignment toward 6:00/km @ HR≤140.
 
-    relevant = [
+    Returns dict with best_pace_sec, best_hr, avg_decoupling for runs near target HR.
+    """
+    near_target = [
         r for r in enriched_runs
         if r["pace_sec"] and r["activity"].get("average_heartrate")
-        and abs(r["activity"]["average_heartrate"] - 140) <= 10
-    ] or [r for r in enriched_runs if r["pace_sec"]]
+        and abs(r["activity"]["average_heartrate"] - 140) <= 15
+    ]
 
-    if not relevant:
-        return 0
+    decouplings = [r["decoupling"] for r in enriched_runs if r["decoupling"] is not None]
+    avg_dc = round(sum(decouplings) / len(decouplings), 1) if decouplings else None
 
-    best = min(r["adj_pace_sec"] or r["pace_sec"] for r in relevant)
-    progress = (start_pace_sec - best) / (start_pace_sec - target_pace_sec) * 100
-    return max(0, min(100, round(progress)))
+    if not near_target:
+        return {"best_pace_sec": None, "best_hr": None, "avg_decoupling": avg_dc}
+
+    best_run = min(near_target, key=lambda r: r["adj_pace_sec"] or r["pace_sec"])
+    return {
+        "best_pace_sec": best_run["adj_pace_sec"] or best_run["pace_sec"],
+        "best_hr": int(best_run["activity"]["average_heartrate"]),
+        "avg_decoupling": avg_dc,
+    }
 
 
 # ── Schedule grid ──────────────────────────────────────────────────────────────
@@ -386,7 +392,8 @@ def compute_goal_reflection(
     run_count: int,
     zones_agg: dict,
     km_change_pct: Optional[int],
-    goal_progress: int,
+    goal_progress: dict,
+    is_current_week: bool = False,
 ) -> str:
     """Return a formatted goal reflection string for the Discord embed field."""
     checks: list[str] = []
@@ -396,7 +403,10 @@ def compute_goal_reflection(
     if run_count >= 3 and run_count <= 5:
         checks.append(f"{icon['ok']} **Konsistensi:** {run_count} sesi — target 3–5x terpenuhi.")
     elif run_count < 3:
-        checks.append(f"{icon['flag']} **Konsistensi:** {run_count} sesi — di bawah minimum 3x/minggu.")
+        if is_current_week:
+            checks.append(f"{icon['warn']} **Konsistensi:** {run_count} sesi sejauh ini — target 3–5x, minggu masih berjalan.")
+        else:
+            checks.append(f"{icon['flag']} **Konsistensi:** {run_count} sesi — di bawah minimum 3x/minggu.")
     else:
         checks.append(f"{icon['warn']} **Konsistensi:** {run_count} sesi — di atas 5x, pastikan recovery cukup.")
 
@@ -429,17 +439,36 @@ def compute_goal_reflection(
     if quality_runs:
         checks.append(f"{icon['ok']} **Quality session:** ada {len(quality_runs)} sesi dengan effort Zone 3+ — target minimum 1x/minggu terpenuhi.")
     else:
-        checks.append(f"{icon['warn']} **Quality session:** tidak ada sesi dengan effort tinggi — pertimbangkan 1 tempo atau interval per minggu.")
+        if is_current_week:
+            checks.append(f"{icon['warn']} **Quality session:** belum ada sesi quality minggu ini — pertimbangkan 1 tempo atau interval.")
+        else:
+            checks.append(f"{icon['warn']} **Quality session:** tidak ada sesi dengan effort tinggi — pertimbangkan 1 tempo atau interval per minggu.")
 
-    # 5. Aerobic goal progress (6:00/km @ HR≤140)
-    if goal_progress >= 80:
-        checks.append(f"{icon['ok']} **Aerobic goal:** {goal_progress}% menuju 6:00/km @ HR≤140 — hampir tercapai.")
-    elif goal_progress >= 50:
-        checks.append(f"{icon['ok']} **Aerobic goal:** {goal_progress}% menuju 6:00/km @ HR≤140 — on track.")
-    elif goal_progress > 0:
-        checks.append(f"{icon['warn']} **Aerobic goal:** {goal_progress}% menuju 6:00/km @ HR≤140 — masih jauh, fokus easy runs.")
+    # 5. Aerobic goal: training alignment toward 6:00/km @ HR≤140
+    gp = goal_progress
+    best_pace = gp.get("best_pace_sec")
+    best_hr = gp.get("best_hr")
+    avg_decoupling = gp.get("avg_decoupling")
+    alignment_issues = []
+
+    if z2 < 80:
+        alignment_issues.append("Zone 2 kurang ({}%, target ≥80%)".format(z2))
+    if avg_decoupling is not None and avg_decoupling > 7:
+        alignment_issues.append("decoupling tinggi ({:.1f}%, target <5%)".format(avg_decoupling))
+
+    if best_pace and best_hr:
+        pace_str = _fmt_pace(best_pace)
+        if best_pace <= 360:
+            checks.append(f"{icon['ok']} **Aerobic goal:** best pace {pace_str}/km @ HR {best_hr} — target 6:00/km @ HR≤140 sudah tercapai!")
+        elif best_pace <= 420:
+            checks.append(f"{icon['ok']} **Aerobic goal:** best easy pace {pace_str}/km @ HR {best_hr} — mendekati target 6:00/km, on track.")
+        else:
+            checks.append(f"{icon['warn']} **Aerobic goal:** best easy pace {pace_str}/km @ HR {best_hr} — masih jauh dari 6:00/km, konsisten di Zone 2.")
     else:
-        checks.append(f"{icon['warn']} **Aerobic goal:** belum cukup data untuk estimate progress.")
+        checks.append(f"{icon['warn']} **Aerobic goal:** belum ada run di dekat HR 140 minggu ini untuk track progress.")
+
+    if alignment_issues:
+        checks.append(f"{icon['warn']} **Training alignment:** {'; '.join(alignment_issues)}")
 
     return "\n".join(checks)
 
@@ -484,7 +513,12 @@ def _build_prompt(
         lines.append(f"- Gym×Run flags: {'; '.join(gym_flags)}")
     if weight_kg:
         lines.append(f"- Berat badan hari ini: {weight_kg} kg")
-    lines.append(f"- Aerobic goal progress: {goal_progress}%")
+    gp_pace = goal_progress.get("best_pace_sec")
+    gp_hr = goal_progress.get("best_hr")
+    if gp_pace and gp_hr:
+        lines.append(f"- Aerobic goal: best easy pace {_fmt_pace(gp_pace)}/km @ HR {gp_hr} (target 6:00/km @ HR≤140)")
+    else:
+        lines.append("- Aerobic goal: belum ada run di dekat HR target minggu ini")
 
     data_block = "\n".join(lines)
 
@@ -590,9 +624,12 @@ def _build_embed(
             diff = avg_decoupling - prev_avg_decoupling
             trend = f" ({'↑' if diff > 0 else '↓'}{abs(diff):.1f}% vs minggu lalu)"
         eff_lines.append(f"Avg decoupling: **{avg_decoupling}%**{trend}")
-    bar_filled = round(goal_progress / 10)
-    bar = "█" * bar_filled + "░" * (10 - bar_filled)
-    eff_lines.append(f"Goal (6:00/km @ HR≤140): `{bar}` {goal_progress}%")
+    gp_pace = goal_progress.get("best_pace_sec")
+    gp_hr = goal_progress.get("best_hr")
+    if gp_pace and gp_hr:
+        eff_lines.append(f"Goal (6:00/km @ HR≤140): best **{_fmt_pace(gp_pace)}/km** @ HR {gp_hr}")
+    else:
+        eff_lines.append("Goal (6:00/km @ HR≤140): belum ada data di dekat HR target")
     embed.add_field(name="Aerobic efficiency", value=_trunc("\n".join(eff_lines)), inline=False)
 
     # Gym × Run
@@ -688,6 +725,7 @@ async def generate_weekly_analysis(
         zones_agg=zones_agg,
         km_change_pct=km_change_pct,
         goal_progress=goal_progress,
+        is_current_week=(weeks_ago == 0),
     )
 
     # Claude
@@ -725,7 +763,7 @@ async def generate_weekly_analysis(
         f"- Zone distribution: {zone_str}",
         f"- Heat-adjusted pace: {_fmt_pace(avg_adj_pace)}/km" if avg_adj_pace else "",
         f"- Aerobic decoupling: {avg_decoupling}%" if avg_decoupling is not None else "",
-        f"- Goal progress (6:00/km @ HR≤140): {goal_progress}%",
+        f"- Aerobic goal: best {_fmt_pace(goal_progress['best_pace_sec'])}/km @ HR {goal_progress['best_hr']}" if goal_progress.get("best_pace_sec") else "- Aerobic goal: belum ada data",
         f"- Gym×Run flags: {'; '.join(gym_flags)}" if gym_flags else "",
         f"- Insight: {insight}" if insight else "",
     ]
