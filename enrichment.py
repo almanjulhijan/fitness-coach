@@ -242,7 +242,12 @@ def compute_aerobic_decoupling(activity: dict) -> float | None:
 def compute_hr_zones(activity: dict, max_hr: int = 185) -> dict:
     """Estimate HR zone distribution from splits.
 
-    Uses 5-zone model based on % of max HR.
+    Uses 5-zone model based on % of max HR:
+      Zone 1: < 60%   (recovery)
+      Zone 2: 60-75%  (aerobic/easy)
+      Zone 3: 75-85%  (tempo)
+      Zone 4: 85-92%  (threshold)
+      Zone 5: >= 92%  (VO2max)
     Returns {zone_label: percentage} or {} if no HR data.
     """
     splits = activity.get("splits_metric") or []
@@ -258,11 +263,11 @@ def compute_hr_zones(activity: dict, max_hr: int = 185) -> dict:
         pct = hr / max_hr * 100
         if pct < 60:
             zones["Zone 1"] += 1
-        elif pct < 70:
+        elif pct < 75:
             zones["Zone 2"] += 1
-        elif pct < 80:
+        elif pct < 85:
             zones["Zone 3"] += 1
-        elif pct < 90:
+        elif pct < 92:
             zones["Zone 4"] += 1
         else:
             zones["Zone 5"] += 1
