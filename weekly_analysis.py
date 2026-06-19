@@ -288,15 +288,40 @@ def analyze_gym_run_interaction(
                 + (f" — HR run {int(hr)} bpm" if hr else "")
             )
 
-        # Leg/full body before a run the next day
+        # Leg/full body before a run the next day — compare HR
         if classified["type"] in ("lower", "full"):
             next_day = (day_idx + 1) % 7
             if next_day in run_by_day:
+                next_run = run_by_day[next_day]
                 next_name = DAYS_SHORT[next_day]
-                flags.append(
-                    f"⚠️ {day_name} leg/full-body → lari {next_name} keesokan harinya. "
-                    "Perhatikan apakah HR lebih tinggi dari biasa."
-                )
+                post_gym_hr = next_run["activity"].get("average_heartrate")
+
+                other_hrs = [
+                    r["activity"]["average_heartrate"]
+                    for d, r in run_by_day.items()
+                    if d != next_day and r["activity"].get("average_heartrate")
+                ]
+                avg_other_hr = round(sum(other_hrs) / len(other_hrs)) if other_hrs else None
+
+                if post_gym_hr and avg_other_hr:
+                    delta = int(post_gym_hr) - avg_other_hr
+                    if delta > 5:
+                        flags.append(
+                            f"⚠️ {day_name} leg/full-body → lari {next_name}: "
+                            f"HR **{int(post_gym_hr)}** bpm, +{delta} bpm di atas rata-rata ({avg_other_hr}). "
+                            f"Fatigue dari gym kemungkinan carry over."
+                        )
+                    else:
+                        flags.append(
+                            f"✅ {day_name} leg/full-body → lari {next_name}: "
+                            f"HR **{int(post_gym_hr)}** bpm, normal (rata-rata {avg_other_hr}). "
+                            f"Recovery cukup."
+                        )
+                elif post_gym_hr:
+                    flags.append(
+                        f"⚠️ {day_name} leg/full-body → lari {next_name}: "
+                        f"HR {int(post_gym_hr)} bpm. Tidak cukup data lari lain minggu ini untuk bandingkan."
+                    )
 
         # CNS-heavy skill work within 48h of a longer run
         if classified["cns_heavy"]:
