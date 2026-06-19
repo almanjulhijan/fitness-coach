@@ -127,9 +127,16 @@ def extract_strava_profile_updates(athlete, activities):
     candidates = {}
     if athlete.get("weight"):
         candidates["Weight"] = "{:.1f} kg".format(athlete["weight"])
+
+    # Max HR: only update if Strava shows a HIGHER value (new personal max)
     max_hrs = [a["max_heartrate"] for a in activities if a.get("max_heartrate")]
     if max_hrs:
-        candidates["Max HR"] = str(int(max(max_hrs)))
+        observed_max = int(max(max_hrs))
+        current_max_str = get_profile_field("Max HR")
+        current_max = int(current_max_str) if current_max_str and current_max_str.isdigit() else 0
+        if observed_max > current_max:
+            candidates["Max HR"] = str(observed_max)
+
     updates = {}
     for field, new_val in candidates.items():
         current = get_profile_field(field)
