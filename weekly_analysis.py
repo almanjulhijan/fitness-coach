@@ -1112,7 +1112,14 @@ async def generate_zone2_review(
     insight = _generate_insight(prompt, claude_client)
 
     if insight:
-        embed.add_field(name="Analisa & Rekomendasi", value=_trunc(insight, 1024), inline=False)
+        if len(insight) <= 1024:
+            embed.add_field(name="Analisa & Rekomendasi", value=insight, inline=False)
+        else:
+            embed.add_field(
+                name="Analisa & Rekomendasi",
+                value="*Detail lengkap di thread bawah* ↓",
+                inline=False,
+            )
 
     embed.set_footer(text="Data 30 hari terakhir dari Strava")
 
