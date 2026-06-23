@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 from strava.auth import get_valid_token
 from strava.client import StravaClient
+from food_log import analyze_food
 from post_run import post_run_analysis
 from weekly_analysis import generate_weekly_analysis, generate_zone2_review
 try:
@@ -808,6 +809,19 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             })
         else:
             user_content = user_text
+
+        # Route #food-log channel to structured food analysis
+        channel_name = getattr(msg.channel, "name", "") or ""
+        if channel_name == "food-log":
+            async with msg.channel.typing():
+                try:
+                    embed = await analyze_food(user_content, claude)
+                    await msg.channel.send(embed=embed)
+                except Exception as e:
+                    print("Food log error: {}".format(e))
+                    import traceback; traceback.print_exc()
+                    await msg.channel.send("❌ Food analysis failed: {}".format(str(e)[:500]))
+            return
 
         if isinstance(msg.channel, discord.Thread):
             parent = msg.channel.parent
