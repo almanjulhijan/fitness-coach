@@ -22,6 +22,7 @@ from strava.auth import get_valid_token
 from strava.client import StravaClient
 from post_run import post_run_analysis
 from weekly_analysis import generate_weekly_analysis, generate_zone2_review
+import supabase_client as supa
 
 load_dotenv()
 
@@ -83,6 +84,28 @@ TOOLS = [
                 },
             },
             "required": ["field", "value", "reason"],
+        },
+    },
+    {
+        "name": "log_weight",
+        "description": (
+            "Log the athlete's weight. Call this when the user mentions their current weight "
+            "in conversation, e.g. 'gue sekarang 73 kg' or 'berat gue turun ke 72.5'. "
+            "This saves to the weight tracking database."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "weight_kg": {
+                    "type": "number",
+                    "description": "Weight in kilograms, e.g. 73.5",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional note about the weigh-in context",
+                },
+            },
+            "required": ["weight_kg"],
         },
     },
 ]
@@ -519,6 +542,39 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             except Exception as e:
                 await interaction.channel.send(f"❌ Zone 2 review gagal: {e}")
 
+    @bot.tree.command(name="weight", description="Log or check your weight")
+    @app_commands.describe(kg="Weight in kg (omit to see current trend)")
+    async def weight_command(interaction: discord.Interaction, kg: float = None) -> None:
+        if kg is not None:
+            supa.log_weight(kg, source="discord")
+            update_profile_field("Weight", f"{kg:.1f} kg")
+            state["kb_content"] = load_knowledge_base()
+            trend = supa.get_weight_trend(weeks=4)
+            change = ""
+            if trend["change_kg"] is not None:
+                sign = "+" if trend["change_kg"] >= 0 else ""
+                change = f" ({sign}{trend['change_kg']:.1f} kg vs minggu lalu)"
+            await interaction.response.send_message(
+                f"⚖️ Logged **{kg:.1f} kg**{change}"
+            )
+        else:
+            trend = supa.get_weight_trend(weeks=4)
+            if trend["current"] is None:
+                await interaction.response.send_message("Belum ada data weight. Pakai `/weight 73.5` untuk log.")
+                return
+            history = supa.get_weight_history(days=30)
+            lines = [f"⚖️ **Current: {trend['current']:.1f} kg**"]
+            if trend["change_kg"] is not None:
+                sign = "+" if trend["change_kg"] >= 0 else ""
+                lines.append(f"vs minggu lalu: {sign}{trend['change_kg']:.1f} kg")
+            if history:
+                recent = history[:5]
+                lines.append("\n**Recent:**")
+                for h in recent:
+                    logged = datetime.fromisoformat(h["logged_at"]).astimezone(WIB)
+                    lines.append(f"- {logged.strftime('%-d %b %H:%M')} — **{float(h['weight_kg']):.1f}** kg ({h['source']})")
+            await interaction.response.send_message("\n".join(lines))
+
     async def apply_strava_profile_updates(athlete, activities):
         """Auto-update about_me.md from Strava data and notify #feed if anything changed."""
         updates = extract_strava_profile_updates(athlete, activities)
@@ -575,6 +631,10 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             state["activities"]         = new_activities
             state["kb_content"]         = load_knowledge_base()
             await apply_strava_profile_updates(new_athlete, new_activities)
+
+            supa.upsert_activities(new_activities)
+            if new_athlete.get("weight"):
+                supa.log_weight(new_athlete["weight"], source="strava")
         except Exception as e:
             print("Error refreshing after webhook: {}".format(e))
             return
@@ -644,6 +704,9 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         print("Bot online as {}".format(bot.user))
         print("Mention @{} to chat.".format(bot.user.name))
         await apply_strava_profile_updates(state["athlete"], state["activities"])
+        synced = supa.upsert_activities(state["activities"])
+        if synced:
+            print(f"Synced {synced} activities to Supabase.")
         await bot.tree.sync()
         print("Slash commands synced.")
         weekly_analysis_task.start()
@@ -701,15 +764,32 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             )
         user_text = user_text.strip()
 
-        # Build image blocks from attachments
-        image_types = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+        # Build image blocks from attachments (download as base64 for reliability)
+        import base64 as b64
+        image_mimes = {"image/png": "image/png", "image/jpeg": "image/jpeg",
+                       "image/gif": "image/gif", "image/webp": "image/webp"}
+        ext_to_mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                       ".gif": "image/gif", ".webp": "image/webp"}
         image_blocks = []
         for att in msg.attachments:
-            if att.content_type and att.content_type.split(";")[0] in image_types:
-                image_blocks.append({
-                    "type": "image",
-                    "source": {"type": "url", "url": att.url},
-                })
+            ct = (att.content_type or "").split(";")[0].strip()
+            mime = image_mimes.get(ct)
+            if not mime:
+                ext = "." + att.filename.rsplit(".", 1)[-1].lower() if "." in att.filename else ""
+                mime = ext_to_mime.get(ext)
+            if mime:
+                try:
+                    img_bytes = await att.read()
+                    image_blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": b64.b64encode(img_bytes).decode("ascii"),
+                        },
+                    })
+                except Exception as e:
+                    print("Failed to read attachment {}: {}".format(att.filename, e))
 
         if not user_text and not image_blocks:
             await msg.channel.send("Hey! Ask me anything about your training.")
@@ -789,6 +869,17 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                                     result = "Goals saved for {}.".format(category_name)
                                 else:
                                     result = "Cannot save goals: channel has no category."
+
+                            elif block.name == "log_weight":
+                                w = block.input["weight_kg"]
+                                note = block.input.get("note")
+                                supa.log_weight(w, source="discord", note=note)
+                                update_profile_field("Weight", f"{w:.1f} kg")
+                                state["kb_content"] = load_knowledge_base()
+                                system_prompt = build_system_prompt_for_category(
+                                    category_name, state["kb_content"], state["activities_summary"]
+                                )
+                                result = f"Weight logged: {w:.1f} kg."
 
                             elif block.name == "propose_profile_update":
                                 field = block.input["field"]
