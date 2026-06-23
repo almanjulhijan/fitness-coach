@@ -13,7 +13,100 @@ import discord
 
 WIB = timezone(timedelta(hours=7))
 LOGS_DIR = Path("nutrition_logs")
+WEIGHT_FILE = Path("weight_log.json")
 MODEL = "claude-sonnet-4-6"
+
+
+# ── Weight tracking ──────────────────────────────────────────────────────────
+
+def save_weight(kg: float, timestamp: datetime = None) -> dict:
+    """Append a weight entry and return the saved entry."""
+    ts = timestamp or datetime.now(WIB)
+    entry = {"kg": round(kg, 1), "timestamp": ts.isoformat(), "date": ts.strftime("%Y-%m-%d")}
+
+    entries = load_weight_history()
+    entries.append(entry)
+    WEIGHT_FILE.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    return entry
+
+
+def load_weight_history() -> list[dict]:
+    """Load all weight entries from file."""
+    if not WEIGHT_FILE.exists():
+        return []
+    try:
+        return json.loads(WEIGHT_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, Exception):
+        return []
+
+
+def get_current_weight() -> Optional[float]:
+    """Return the most recent weight in kg, or None."""
+    entries = load_weight_history()
+    if not entries:
+        return None
+    return entries[-1]["kg"]
+
+
+def get_weight_trend(days: int = 30) -> list[dict]:
+    """Return weight entries from the last N days, one per date (latest wins)."""
+    cutoff = (datetime.now(WIB) - timedelta(days=days)).strftime("%Y-%m-%d")
+    entries = load_weight_history()
+    by_date = {}
+    for e in entries:
+        if e["date"] >= cutoff:
+            by_date[e["date"]] = e
+    return [by_date[d] for d in sorted(by_date.keys())]
+
+
+def build_weight_embed(new_entry: dict) -> discord.Embed:
+    """Build a Discord embed after logging a weight entry."""
+    kg = new_entry["kg"]
+    trend = get_weight_trend(days=30)
+
+    embed = discord.Embed(
+        title="⚖️ Berat dicatat: {} kg".format(kg),
+        color=0xFF9800,
+    )
+
+    if len(trend) >= 2:
+        first = trend[0]["kg"]
+        delta = kg - first
+        sign = "+" if delta >= 0 else ""
+        period_days = (
+            datetime.strptime(trend[-1]["date"], "%Y-%m-%d")
+            - datetime.strptime(trend[0]["date"], "%Y-%m-%d")
+        ).days
+        embed.add_field(
+            name="Trend ({} hari)".format(period_days),
+            value="{}{:.1f} kg ({:.1f} → {:.1f})".format(sign, delta, first, kg),
+            inline=True,
+        )
+
+        # Weekly average comparison
+        week_entries = [e for e in trend if e["date"] >= (datetime.now(WIB) - timedelta(days=7)).strftime("%Y-%m-%d")]
+        prev_entries = [e for e in trend if (datetime.now(WIB) - timedelta(days=14)).strftime("%Y-%m-%d") <= e["date"] < (datetime.now(WIB) - timedelta(days=7)).strftime("%Y-%m-%d")]
+        if week_entries and prev_entries:
+            avg_this = sum(e["kg"] for e in week_entries) / len(week_entries)
+            avg_prev = sum(e["kg"] for e in prev_entries) / len(prev_entries)
+            wk_delta = avg_this - avg_prev
+            wk_sign = "+" if wk_delta >= 0 else ""
+            embed.add_field(
+                name="vs minggu lalu",
+                value="{}{:.1f} kg (avg {:.1f} → {:.1f})".format(wk_sign, wk_delta, avg_prev, avg_this),
+                inline=True,
+            )
+
+    # History lines (last 7 entries)
+    if len(trend) > 1:
+        history_lines = []
+        for e in trend[-7:]:
+            dt = datetime.strptime(e["date"], "%Y-%m-%d")
+            history_lines.append("**{}** — {:.1f} kg".format(dt.strftime("%a %-d %b"), e["kg"]))
+        embed.add_field(name="Riwayat", value="\n".join(history_lines), inline=False)
+
+    embed.set_footer(text="Gunakan /weight <kg> untuk update")
+    return embed
 
 
 # ── Food analysis via Claude ──────────────────────────────────────────────────
@@ -252,12 +345,33 @@ async def generate_weight_review(
 
     days_elapsed = (now - week_start).days + 1
 
+    # Weight data
+    current_weight = get_current_weight()
+    weight_trend = get_weight_trend(days=30)
+
     # Build embed
+    desc = "Evaluasi holistik: nutrisi + olahraga · {} hari".format(days_elapsed)
+    if current_weight:
+        desc += " · ⚖️ {:.1f} kg".format(current_weight)
     embed = discord.Embed(
         title="⚖️ Weight Review — minggu ini",
-        description="Evaluasi holistik: nutrisi + olahraga · {} hari".format(days_elapsed),
+        description=desc,
         color=0xFF9800,
     )
+
+    # Weight trend section
+    if len(weight_trend) >= 2:
+        first_w = weight_trend[0]
+        last_w = weight_trend[-1]
+        delta = last_w["kg"] - first_w["kg"]
+        sign = "+" if delta >= 0 else ""
+        weight_lines = [
+            "**Sekarang:** {:.1f} kg".format(last_w["kg"]),
+            "**30 hari:** {}{:.1f} kg ({:.1f} → {:.1f})".format(sign, delta, first_w["kg"], last_w["kg"]),
+        ]
+        embed.add_field(name="⚖️ Berat Badan", value="\n".join(weight_lines), inline=False)
+    elif current_weight:
+        embed.add_field(name="⚖️ Berat Badan", value="**{:.1f} kg** (belum cukup data trend)".format(current_weight), inline=False)
 
     # Nutrition section
     if daily_cals:
@@ -311,11 +425,24 @@ async def generate_weight_review(
         f"- Gym: {gym_sessions} sessions"
     )
 
+    weight_summary = ""
+    if weight_trend:
+        weight_lines = []
+        for w in weight_trend:
+            weight_lines.append("- {}: {:.1f} kg".format(w["date"], w["kg"]))
+        weight_summary = "\n".join(weight_lines)
+        if len(weight_trend) >= 2:
+            delta = weight_trend[-1]["kg"] - weight_trend[0]["kg"]
+            weight_summary += "\nTrend 30 hari: {}{:.1f} kg".format("+" if delta >= 0 else "", delta)
+    elif current_weight:
+        weight_summary = "Berat saat ini: {:.1f} kg (belum ada history)".format(current_weight)
+
     prompt = (
         "Kamu adalah personal coach untuk weight loss yang juga paham olahraga. "
-        "Analisa data nutrisi + olahraga minggu ini secara holistik. Bahasa Indonesia, lo/gue.\n\n"
+        "Analisa data nutrisi + olahraga + berat badan minggu ini secara holistik. Bahasa Indonesia, lo/gue.\n\n"
         "## Athlete Profile\n{}\n\n"
         "## Goals\n{}\n\n"
+        "## Berat Badan (30 hari terakhir)\n{}\n\n"
         "## Nutrisi minggu ini ({} hari dengan log)\n{}\n"
         "Rata-rata: {} kcal/hari, protein {} g/hari\n\n"
         "## Olahraga minggu ini\n{}\n\n"
@@ -323,7 +450,8 @@ async def generate_weight_review(
         "**Evaluasi:**\n"
         "Apakah intake kalori mendukung target weight loss? "
         "Apakah protein cukup? Apakah deficit terlalu besar atau kurang? "
-        "Bagaimana nutrisi terhadap beban latihan?\n\n"
+        "Bagaimana nutrisi terhadap beban latihan? "
+        "Bagaimana trend berat badan?\n\n"
         "**Terus lakukan:**\n- (2-3 hal)\n\n"
         "**Stop/kurangi:**\n- (1-2 hal)\n\n"
         "**Mulai lakukan:**\n- (2-3 hal)\n\n"
@@ -335,6 +463,7 @@ async def generate_weight_review(
     ).format(
         kb_content or "(no profile)",
         goals_content or "(no goals)",
+        weight_summary or "(belum ada data berat)",
         days_with_logs,
         nutrition_summary or "(tidak ada data)",
         avg_calories, avg_protein,

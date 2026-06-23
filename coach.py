@@ -29,6 +29,9 @@ from nutrition import (
     build_daily_embed,
     build_food_reply_embed,
     generate_weight_review,
+    save_weight,
+    get_current_weight,
+    build_weight_embed,
 )
 
 load_dotenv()
@@ -451,6 +454,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                     kb_content=kb,
                     goals_content=goals_content,
                     claude_client=claude,
+                    weight_kg=get_current_weight(),
                     weeks_ago=weeks_ago,
                 )
                 msg = await channel.send(embed=embed)
@@ -520,6 +524,22 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             save_food_entry(entry)
             embed = build_food_reply_embed(entry)
             await message.reply(embed=embed)
+
+    @bot.tree.command(name="weight", description="Catat berat badan (kg)")
+    @app_commands.describe(kg="Berat badan dalam kg, contoh: 76.5")
+    async def weight_command(interaction: discord.Interaction, kg: float) -> None:
+        if kg < 30 or kg > 200:
+            await interaction.response.send_message("⚠️ Berat harus antara 30-200 kg.")
+            return
+
+        entry = save_weight(kg)
+
+        # Auto-update about_me.md
+        update_profile_field("Weight", "{:.1f} kg".format(kg))
+        state["kb_content"] = load_knowledge_base()
+
+        embed = build_weight_embed(entry)
+        await interaction.response.send_message(embed=embed)
 
     @bot.tree.command(name="food-today", description="Lihat food log hari ini")
     async def food_today_command(interaction: discord.Interaction) -> None:
