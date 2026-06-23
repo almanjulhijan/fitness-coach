@@ -509,16 +509,16 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             return
         await run_weekly_analysis(channel, weeks_ago=1)
 
-    @bot.tree.command(name="weekly-review", description="Generate weekly training analysis")
-    async def weekly_review_command(interaction: discord.Interaction) -> None:
+    @bot.tree.command(name="training-weekly", description="Weekly training analysis (running + gym)")
+    async def training_weekly_command(interaction: discord.Interaction) -> None:
         if not state["activities"]:
             await interaction.response.send_message("⚠️ No data loaded yet. Try `!refresh` first.")
             return
         await interaction.response.send_message("Starting weekly review...")
         await run_weekly_analysis(interaction.channel, weeks_ago=0)
 
-    @bot.tree.command(name="daily-review", description="Recap food intake hari ini")
-    async def daily_review_command(interaction: discord.Interaction) -> None:
+    @bot.tree.command(name="nutrition-daily", description="Recap food intake hari ini")
+    async def nutrition_daily_command(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Generating daily recap...")
         try:
             embed = await generate_daily_review()
@@ -541,8 +541,8 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         except Exception as e:
             print(f"Daily review auto-post failed: {e}")
 
-    @bot.tree.command(name="zone2-review", description="Review Zone 2 running progress & trend")
-    async def zone2_review_command(interaction: discord.Interaction) -> None:
+    @bot.tree.command(name="training-zone2", description="Zone 2 running progress & aerobic trend")
+    async def training_zone2_command(interaction: discord.Interaction) -> None:
         if not state["activities"]:
             await interaction.response.send_message("⚠️ No data loaded yet. Try `!refresh` first.")
             return
@@ -572,7 +572,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             except Exception as e:
                 await interaction.channel.send(f"❌ Zone 2 review gagal: {e}")
 
-    @bot.tree.command(name="weight", description="Log or check your weight")
+    @bot.tree.command(name="nutrition-weight", description="Log or check your weight")
     @app_commands.describe(kg="Weight in kg (omit to see current trend)")
     async def weight_command(interaction: discord.Interaction, kg: float = None) -> None:
         if kg is not None:
