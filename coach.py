@@ -950,9 +950,11 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                     for chunk in chunks:
                         await msg.channel.send(chunk)
 
-            except anthropic.APIError as e:
+            except Exception as e:
                 channel_history.pop()
-                await msg.channel.send("API error: {}".format(e))
+                print("Error in on_message: {}".format(e))
+                import traceback; traceback.print_exc()
+                await msg.channel.send("❌ Error: {}".format(str(e)[:500]))
 
     await bot.start(discord_token)
 
