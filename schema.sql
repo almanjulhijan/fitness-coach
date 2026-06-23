@@ -31,6 +31,24 @@ CREATE TABLE activities (
 CREATE INDEX idx_activities_start_date ON activities (start_date DESC);
 CREATE INDEX idx_activities_sport_type ON activities (sport_type);
 
+-- Food log entries
+CREATE TABLE food_log (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  portion TEXT,
+  calories INTEGER,
+  protein NUMERIC(5,1),
+  fat NUMERIC(5,1),
+  carbs NUMERIC(5,1),
+  sugar NUMERIC(5,1),
+  fiber NUMERIC(5,1),
+  source TEXT NOT NULL DEFAULT 'photo',  -- 'photo', 'text', 'combined'
+  verdict TEXT,
+  logged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_food_log_logged_at ON food_log (logged_at DESC);
+
 -- Weekly analysis snapshots
 CREATE TABLE weekly_snapshots (
   id BIGSERIAL PRIMARY KEY,

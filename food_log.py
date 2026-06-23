@@ -4,6 +4,11 @@ import json
 import anthropic
 import discord
 
+try:
+    import supabase_client as supa
+except ImportError:
+    supa = None
+
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 512
 
@@ -82,6 +87,29 @@ async def analyze_food(user_content, claude_client: anthropic.Anthropic) -> disc
     if verdict:
         embed.add_field(name="Verdict", value=verdict, inline=False)
 
-    embed.set_footer(text="📸 food log · fitness-coach")
+    # Determine source type
+    has_image = isinstance(user_content, list) and any(b.get("type") == "image" for b in user_content)
+    has_text_input = isinstance(user_content, str) or (
+        isinstance(user_content, list) and any(
+            b.get("type") == "text" and b.get("text", "").strip() not in ("", "Analisis gambar ini.")
+            for b in user_content
+        )
+    )
+    if has_image and has_text_input:
+        source = "combined"
+    elif has_image:
+        source = "photo"
+    else:
+        source = "text"
+
+    # Save to Supabase
+    if supa:
+        try:
+            supa.log_food({**data, "source": source})
+        except Exception as e:
+            print(f"Failed to save food log to Supabase: {e}")
+
+    saved_label = " · ✅ logged" if supa and supa.get_supabase() else ""
+    embed.set_footer(text=f"📸 food log · fitness-coach{saved_label}")
 
     return embed

@@ -85,6 +85,64 @@ def get_weight_trend(weeks: int = 4) -> dict:
     return {"current": current, "prev_week": prev_week, "change_kg": change_kg}
 
 
+# ── Food Log ──────────────────────────────────────────────────────────────────
+
+
+def log_food(data: dict) -> bool:
+    """Save a food entry. data should have: name, portion, calories, protein, fat, carbs, etc."""
+    sb = get_supabase()
+    if not sb:
+        return False
+    row = {
+        "name": data.get("name", "Unknown"),
+        "portion": data.get("portion"),
+        "calories": data.get("calories"),
+        "protein": data.get("protein"),
+        "fat": data.get("fat"),
+        "carbs": data.get("carbs"),
+        "sugar": data.get("sugar"),
+        "fiber": data.get("fiber"),
+        "source": data.get("source", "photo"),
+        "verdict": data.get("verdict"),
+    }
+    sb.table("food_log").insert(row).execute()
+    return True
+
+
+def get_food_today() -> list[dict]:
+    """Get all food entries logged today (WIB)."""
+    sb = get_supabase()
+    if not sb:
+        return []
+    today_start = datetime.now(WIB).replace(hour=0, minute=0, second=0, microsecond=0)
+    resp = (
+        sb.table("food_log")
+        .select("*")
+        .gte("logged_at", today_start.isoformat())
+        .order("logged_at")
+        .execute()
+    )
+    return resp.data or []
+
+
+def get_food_for_date(date_str: str) -> list[dict]:
+    """Get food entries for a specific date (YYYY-MM-DD in WIB)."""
+    sb = get_supabase()
+    if not sb:
+        return []
+    day_start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=WIB)
+    day_end = day_start + timedelta(days=1)
+    resp = (
+        sb.table("food_log")
+        .select("*")
+        .gte("logged_at", day_start.isoformat())
+        .lt("logged_at", day_end.isoformat())
+        .order("logged_at")
+        .execute()
+    )
+    return resp.data or []
+
+
 # ── Activities ────────────────────────────────────────────────────────────────
 
 
