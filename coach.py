@@ -526,7 +526,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         except Exception as e:
             await interaction.channel.send(f"❌ Daily review gagal: {e}")
 
-    @tasks.loop(time=dt.time(hour=14, minute=0, tzinfo=timezone.utc))  # 21:00 WIB
+    @tasks.loop(time=dt.time(hour=22, minute=0, tzinfo=timezone.utc))  # 05:00 WIB
     async def daily_review_task() -> None:
         channel = discord.utils.find(
             lambda c: isinstance(c, discord.TextChannel) and c.name == "food-log",
@@ -536,7 +536,9 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             print("⚠️ #food-log channel not found for daily recap.")
             return
         try:
-            embed = await generate_daily_review(claude_client=claude)
+            # Review kemarin (auto-post pagi = recap hari sebelumnya)
+            yesterday = (datetime.now(WIB) - timedelta(days=1)).strftime("%Y-%m-%d")
+            embed = await generate_daily_review(date_str=yesterday, claude_client=claude)
             await channel.send(embed=embed)
         except Exception as e:
             print(f"Daily review auto-post failed: {e}")
