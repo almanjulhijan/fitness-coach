@@ -22,6 +22,14 @@ from strava.auth import get_valid_token
 from strava.client import StravaClient
 from post_run import post_run_analysis
 from weekly_analysis import generate_weekly_analysis, generate_zone2_review
+from nutrition import (
+    analyze_food,
+    save_food_entry,
+    load_daily_entries,
+    build_daily_embed,
+    build_food_reply_embed,
+    generate_weight_review,
+)
 
 load_dotenv()
 
@@ -488,6 +496,66 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         await interaction.response.send_message("Starting weekly review...")
         await run_weekly_analysis(interaction.channel, weeks_ago=0)
 
+    async def _handle_food_log(message: discord.Message) -> None:
+        """Process a food log message (photo and/or text) in #food-log channel."""
+        text = message.content.strip()
+        image_data = None
+        image_media_type = "image/jpeg"
+
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith("image/"):
+                image_data = await attachment.read()
+                image_media_type = attachment.content_type
+                break
+
+        if not text and not image_data:
+            return
+
+        async with message.channel.typing():
+            entry = await analyze_food(claude, text=text, image_data=image_data, image_media_type=image_media_type)
+            if not entry:
+                await message.reply("❌ Gagal analisa makanan. Coba lagi ya.")
+                return
+
+            save_food_entry(entry)
+            embed = build_food_reply_embed(entry)
+            await message.reply(embed=embed)
+
+    @bot.tree.command(name="food-today", description="Lihat food log hari ini")
+    async def food_today_command(interaction: discord.Interaction) -> None:
+        entries = load_daily_entries()
+        if not entries:
+            await interaction.response.send_message("Belum ada food log hari ini. Kirim foto/text makanan di #food-log!")
+            return
+        embed = build_daily_embed(entries)
+        await interaction.response.send_message(embed=embed)
+
+    @bot.tree.command(name="weight-review", description="Evaluasi holistik: nutrisi + olahraga untuk weight loss")
+    async def weight_review_command(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Generating weight review...")
+        async with interaction.channel.typing():
+            try:
+                kb = load_knowledge_base()
+                goals_path = Path("knowledge_base/goals_nutrition.md")
+                goals_content = goals_path.read_text(encoding="utf-8") if goals_path.exists() else ""
+
+                embed, insight = await generate_weight_review(
+                    activities=state["activities"],
+                    kb_content=kb,
+                    goals_content=goals_content,
+                    claude_client=claude,
+                )
+                msg = await interaction.channel.send(embed=embed)
+
+                if insight and len(insight) > 1024:
+                    thread = await msg.create_thread(name="Weight Review Detail")
+                    chunks = [insight[i:i+4096] for i in range(0, len(insight), 4096)]
+                    for chunk in chunks:
+                        detail_embed = discord.Embed(description=chunk, color=0xFF9800)
+                        await thread.send(embed=detail_embed)
+            except Exception as e:
+                await interaction.channel.send(f"❌ Weight review gagal: {e}")
+
     @bot.tree.command(name="zone2-review", description="Review Zone 2 running progress & trend")
     async def zone2_review_command(interaction: discord.Interaction) -> None:
         if not state["activities"]:
@@ -691,6 +759,16 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
 
         if msg.author.bot:
             return
+
+        # Auto food-log detection in #food-log channel (no @mention needed)
+        if (
+            isinstance(msg.channel, discord.TextChannel)
+            and msg.channel.name == "food-log"
+            and (msg.content.strip() or msg.attachments)
+        ):
+            await _handle_food_log(msg)
+            return
+
         if bot.user not in msg.mentions:
             return
 
