@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 from strava.auth import get_valid_token
 from strava.client import StravaClient
+from daily_review import generate_daily_review
 from food_log import analyze_food
 from post_run import post_run_analysis
 from weekly_analysis import generate_weekly_analysis, generate_zone2_review
@@ -516,6 +517,30 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         await interaction.response.send_message("Starting weekly review...")
         await run_weekly_analysis(interaction.channel, weeks_ago=0)
 
+    @bot.tree.command(name="daily-review", description="Recap food intake hari ini")
+    async def daily_review_command(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Generating daily recap...")
+        try:
+            embed = await generate_daily_review()
+            await interaction.channel.send(embed=embed)
+        except Exception as e:
+            await interaction.channel.send(f"❌ Daily review gagal: {e}")
+
+    @tasks.loop(time=dt.time(hour=14, minute=0, tzinfo=timezone.utc))  # 21:00 WIB
+    async def daily_review_task() -> None:
+        channel = discord.utils.find(
+            lambda c: isinstance(c, discord.TextChannel) and c.name == "food-log",
+            bot.get_all_channels(),
+        )
+        if not channel:
+            print("⚠️ #food-log channel not found for daily recap.")
+            return
+        try:
+            embed = await generate_daily_review()
+            await channel.send(embed=embed)
+        except Exception as e:
+            print(f"Daily review auto-post failed: {e}")
+
     @bot.tree.command(name="zone2-review", description="Review Zone 2 running progress & trend")
     async def zone2_review_command(interaction: discord.Interaction) -> None:
         if not state["activities"]:
@@ -715,6 +740,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         await bot.tree.sync()
         print("Slash commands synced.")
         weekly_analysis_task.start()
+        daily_review_task.start()
 
     @bot.command(name="refresh")
     async def refresh(ctx):
