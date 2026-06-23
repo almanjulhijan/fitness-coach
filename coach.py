@@ -26,7 +26,7 @@ from nutrition import (
     analyze_food,
     build_daily_embed,
     build_food_reply_embed,
-    generate_weight_review,
+    generate_nutrition_weekly_review,
     build_weight_embed,
 )
 import db
@@ -476,6 +476,20 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             return
         await run_weekly_analysis(channel, weeks_ago=1)
 
+    @tasks.loop(time=dt.time(hour=22, minute=30, tzinfo=timezone.utc))  # 05:30 WIB
+    async def nutrition_weekly_task() -> None:
+        if datetime.now(WIB).weekday() != 0:  # Monday only
+            return
+        nutrition_channel = discord.utils.get(
+            bot.get_all_channels(),
+            name="review",
+            category__name="Nutrition",
+        )
+        if not nutrition_channel:
+            print("⚠️  Channel #review in 'Nutrition' not found — skipping nutrition review.")
+            return
+        await run_nutrition_review(nutrition_channel, weeks_ago=1)
+
     @bot.tree.command(name="weekly-review", description="Generate weekly training analysis")
     async def weekly_review_command(interaction: discord.Interaction) -> None:
         if not state["activities"]:
@@ -531,31 +545,37 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         embed = build_daily_embed(entries)
         await interaction.response.send_message(embed=embed)
 
-    @bot.tree.command(name="weight-review", description="Evaluasi holistik: nutrisi + olahraga untuk weight loss")
-    async def weight_review_command(interaction: discord.Interaction) -> None:
-        await interaction.response.send_message("Generating weight review...")
-        async with interaction.channel.typing():
+    async def run_nutrition_review(channel: discord.TextChannel, weeks_ago: int = 0) -> None:
+        """Generate and post nutrition weekly review."""
+        async with channel.typing():
             try:
                 kb = load_knowledge_base()
                 goals_path = Path("knowledge_base/goals_nutrition.md")
                 goals_content = goals_path.read_text(encoding="utf-8") if goals_path.exists() else ""
 
-                embed, insight = await generate_weight_review(
+                embed, insight = await generate_nutrition_weekly_review(
                     activities=state["activities"],
                     kb_content=kb,
                     goals_content=goals_content,
                     claude_client=claude,
+                    weeks_ago=weeks_ago,
                 )
-                msg = await interaction.channel.send(embed=embed)
+                msg = await channel.send(embed=embed)
 
                 if insight and len(insight) > 1024:
-                    thread = await msg.create_thread(name="Weight Review Detail")
+                    week_label = datetime.now(WIB).strftime("%-d %b")
+                    thread = await msg.create_thread(name="Nutrition Review — {}".format(week_label))
                     chunks = [insight[i:i+4096] for i in range(0, len(insight), 4096)]
                     for chunk in chunks:
                         detail_embed = discord.Embed(description=chunk, color=0xFF9800)
                         await thread.send(embed=detail_embed)
             except Exception as e:
-                await interaction.channel.send(f"❌ Weight review gagal: {e}")
+                await channel.send("❌ Nutrition review gagal: {}".format(e))
+
+    @bot.tree.command(name="nutrition-review", description="Weekly review: nutrisi + olahraga + berat badan untuk weight loss")
+    async def nutrition_review_command(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message("Generating nutrition weekly review...")
+        await run_nutrition_review(interaction.channel, weeks_ago=0)
 
     @bot.tree.command(name="zone2-review", description="Review Zone 2 running progress & trend")
     async def zone2_review_command(interaction: discord.Interaction) -> None:
@@ -716,6 +736,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         await bot.tree.sync()
         print("Slash commands synced.")
         weekly_analysis_task.start()
+        nutrition_weekly_task.start()
 
     @bot.command(name="refresh")
     async def refresh(ctx):

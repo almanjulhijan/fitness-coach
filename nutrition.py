@@ -202,41 +202,74 @@ def _fmt_pace(sec_km: float) -> str:
     return "{}:{:02d}".format(m, s)
 
 
-async def generate_weight_review(
+def _week_range(weeks_ago: int = 0) -> tuple[datetime, datetime]:
+    now = datetime.now(WIB)
+    this_monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    week_start = this_monday - timedelta(weeks=weeks_ago)
+    week_end = now if weeks_ago == 0 else week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+    return week_start, week_end
+
+
+def _weight_staleness(weight_trend: list[dict]) -> tuple[str, int]:
+    """Check how stale the latest weight entry is. Returns (status_text, days_old)."""
+    if not weight_trend:
+        return "⚠️ Belum pernah log berat badan. Gunakan `/weight <kg>`", -1
+    last_date_str = weight_trend[-1]["date"]
+    last_date = datetime.strptime(last_date_str, "%Y-%m-%d").replace(tzinfo=WIB)
+    days_old = (datetime.now(WIB) - last_date).days
+    if days_old <= 3:
+        return "", days_old
+    elif days_old <= 7:
+        return "⚠️ Berat terakhir {} hari lalu — update yuk pakai `/weight`".format(days_old), days_old
+    else:
+        return "❌ Berat terakhir **{} hari lalu** — data sudah basi, update pakai `/weight`".format(days_old), days_old
+
+
+async def generate_nutrition_weekly_review(
     activities: list[dict],
     kb_content: str,
     goals_content: str,
     claude_client: anthropic.Anthropic,
+    weeks_ago: int = 0,
 ) -> tuple[discord.Embed, str]:
-    """Generate holistic weight loss review: nutrition + exercise + weight trend."""
+    """Generate weekly nutrition review with week context awareness."""
     now = datetime.now(WIB)
-    week_start = (now - timedelta(days=now.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    week_start, week_end = _week_range(weeks_ago)
+    is_current_week = (weeks_ago == 0)
+    display_end = min(now, week_end)
 
-    nutrition_data = db.load_entries_range(week_start, now)
+    # Nutrition data
+    nutrition_data = db.load_entries_range(week_start, display_end)
     days_with_logs = len(nutrition_data)
-    all_entries = [e for entries in nutrition_data.values() for e in entries]
 
     daily_cals = []
     daily_proteins = []
+    daily_carbs = []
+    daily_fats = []
     for date_str, entries in sorted(nutrition_data.items()):
         totals = compute_daily_totals(entries)
         daily_cals.append(totals["calories"])
         daily_proteins.append(totals["protein_g"])
+        daily_carbs.append(totals["carbs_g"])
+        daily_fats.append(totals["fat_g"])
 
     avg_calories = round(sum(daily_cals) / len(daily_cals)) if daily_cals else 0
     avg_protein = round(sum(daily_proteins) / len(daily_proteins)) if daily_proteins else 0
 
+    # Exercise data
     RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
     week_runs = [
         a for a in activities
         if datetime.fromisoformat(a["start_date"].replace("Z", "+00:00")).astimezone(WIB) >= week_start
+        and datetime.fromisoformat(a["start_date"].replace("Z", "+00:00")).astimezone(WIB) <= display_end
         and (a.get("sport_type") or a.get("type", "")) in RUN_SPORTS
     ]
     week_gym = [
         a for a in activities
         if datetime.fromisoformat(a["start_date"].replace("Z", "+00:00")).astimezone(WIB) >= week_start
+        and datetime.fromisoformat(a["start_date"].replace("Z", "+00:00")).astimezone(WIB) <= display_end
         and (a.get("sport_type") or a.get("type", "")) in {"WeightTraining", "Workout"}
     ]
 
@@ -245,20 +278,27 @@ async def generate_weight_review(
     run_cals += sum(a.get("calories", 0) or 0 for a in week_runs if not a.get("kilojoules"))
     gym_sessions = len(week_gym)
 
-    days_elapsed = (now - week_start).days + 1
+    days_elapsed = (display_end - week_start).days + 1
 
+    # Weight data
     current_weight = db.get_current_weight()
     weight_trend = db.get_weight_trend(days=30)
+    weight_stale_msg, weight_days_old = _weight_staleness(weight_trend)
 
-    desc = "Evaluasi holistik: nutrisi + olahraga · {} hari".format(days_elapsed)
+    # Build embed
+    week_label = "{} – {}".format(week_start.strftime("%-d %b"), display_end.strftime("%-d %b"))
+    title = "🍽️ Nutrition Weekly Review — {}".format(week_label)
+    if is_current_week:
+        title += " (in progress)"
+
+    desc = "Nutrisi + olahraga · {} hari".format(days_elapsed)
+    if is_current_week:
+        desc += " (minggu berjalan)"
     if current_weight:
         desc += " · ⚖️ {:.1f} kg".format(current_weight)
-    embed = discord.Embed(
-        title="⚖️ Weight Review — minggu ini",
-        description=desc,
-        color=0xFF9800,
-    )
+    embed = discord.Embed(title=title, description=desc, color=0xFF9800)
 
+    # Weight section
     if len(weight_trend) >= 2:
         first_w = weight_trend[0]
         last_w = weight_trend[-1]
@@ -268,10 +308,18 @@ async def generate_weight_review(
             "**Sekarang:** {:.1f} kg".format(last_w["kg"]),
             "**30 hari:** {}{:.1f} kg ({:.1f} → {:.1f})".format(sign, delta, first_w["kg"], last_w["kg"]),
         ]
+        if weight_stale_msg:
+            weight_lines.append(weight_stale_msg)
         embed.add_field(name="⚖️ Berat Badan", value="\n".join(weight_lines), inline=False)
     elif current_weight:
-        embed.add_field(name="⚖️ Berat Badan", value="**{:.1f} kg** (belum cukup data trend)".format(current_weight), inline=False)
+        val = "**{:.1f} kg** (belum cukup data trend)".format(current_weight)
+        if weight_stale_msg:
+            val += "\n" + weight_stale_msg
+        embed.add_field(name="⚖️ Berat Badan", value=val, inline=False)
+    else:
+        embed.add_field(name="⚖️ Berat Badan", value=weight_stale_msg or "Belum ada data", inline=False)
 
+    # Nutrition section
     if daily_cals:
         nut_lines = []
         for date_str in sorted(nutrition_data.keys()):
@@ -281,20 +329,17 @@ async def generate_weight_review(
             nut_lines.append("**{}** — {} kcal · P {}g · {} entries".format(
                 dt.strftime("%a %-d"), totals["calories"], totals["protein_g"], len(entries)
             ))
-        embed.add_field(
-            name="🍽️ Nutrisi",
-            value="\n".join(nut_lines) + "\n**Rata-rata: {} kcal/hari · P {}g**".format(
-                avg_calories, avg_protein
-            ),
-            inline=False,
-        )
-    else:
-        embed.add_field(
-            name="🍽️ Nutrisi",
-            value="Belum ada food log minggu ini",
-            inline=False,
-        )
+        nut_lines.append("**Rata-rata: {} kcal/hari · P {}g**".format(avg_calories, avg_protein))
 
+        if is_current_week and days_with_logs < days_elapsed:
+            missing = days_elapsed - days_with_logs
+            nut_lines.append("⚠️ {} hari tanpa food log".format(missing))
+
+        embed.add_field(name="🍽️ Nutrisi", value="\n".join(nut_lines), inline=False)
+    else:
+        embed.add_field(name="🍽️ Nutrisi", value="Belum ada food log minggu ini", inline=False)
+
+    # Exercise section
     exercise_lines = [
         "🏃 {} run · {:.1f} km".format(len(week_runs), run_km),
         "💪 {} gym session".format(gym_sessions),
@@ -303,6 +348,7 @@ async def generate_weight_review(
         exercise_lines.append("🔥 ~{:.0f} kcal burned (running)".format(run_cals))
     embed.add_field(name="🏋️ Olahraga", value="\n".join(exercise_lines), inline=False)
 
+    # Build Claude prompt
     nutrition_summary = ""
     if daily_cals:
         per_day_lines = []
@@ -317,46 +363,63 @@ async def generate_weight_review(
         nutrition_summary = "\n".join(per_day_lines)
 
     exercise_summary = (
-        f"- Running: {len(week_runs)} runs, {run_km:.1f} km, ~{run_cals:.0f} kcal burned\n"
-        f"- Gym: {gym_sessions} sessions"
-    )
+        "- Running: {} runs, {:.1f} km, ~{:.0f} kcal burned\n"
+        "- Gym: {} sessions"
+    ).format(len(week_runs), run_km, run_cals, gym_sessions)
 
     weight_summary = ""
     if weight_trend:
-        weight_lines_prompt = []
-        for w in weight_trend:
-            weight_lines_prompt.append("- {}: {:.1f} kg".format(w["date"], w["kg"]))
-        weight_summary = "\n".join(weight_lines_prompt)
+        wt_lines = ["- {}: {:.1f} kg".format(w["date"], w["kg"]) for w in weight_trend]
+        weight_summary = "\n".join(wt_lines)
         if len(weight_trend) >= 2:
             delta = weight_trend[-1]["kg"] - weight_trend[0]["kg"]
             weight_summary += "\nTrend 30 hari: {}{:.1f} kg".format("+" if delta >= 0 else "", delta)
+        if weight_days_old > 3:
+            weight_summary += "\n⚠️ Data berat terakhir {} hari lalu, mungkin tidak akurat".format(weight_days_old)
     elif current_weight:
         weight_summary = "Berat saat ini: {:.1f} kg (belum ada history)".format(current_weight)
 
+    week_context = ""
+    if is_current_week:
+        days_left = 6 - now.weekday()
+        week_context = (
+            "PENTING: Ini adalah minggu yang SEDANG BERJALAN (hari ke-{} dari 7, sisa {} hari). "
+            "Jangan evaluasi seolah minggu sudah selesai. "
+            "Rekomendasi harus untuk SISA MINGGU INI, bukan minggu depan. "
+            "Hari tanpa food log belum tentu skip — mungkin belum terjadi."
+        ).format(days_elapsed, days_left)
+    else:
+        week_context = (
+            "Ini adalah review untuk minggu yang SUDAH SELESAI. "
+            "Evaluasi secara menyeluruh dan rekomendasi untuk minggu depan."
+        )
+
     prompt = (
         "Kamu adalah personal coach untuk weight loss yang juga paham olahraga. "
-        "Analisa data nutrisi + olahraga + berat badan minggu ini secara holistik. Bahasa Indonesia, lo/gue.\n\n"
+        "Analisa data nutrisi + olahraga + berat badan secara holistik. Bahasa Indonesia, lo/gue.\n\n"
+        "{}\n\n"
         "## Athlete Profile\n{}\n\n"
         "## Goals\n{}\n\n"
         "## Berat Badan (30 hari terakhir)\n{}\n\n"
-        "## Nutrisi minggu ini ({} hari dengan log)\n{}\n"
+        "## Nutrisi ({} hari dengan log)\n{}\n"
         "Rata-rata: {} kcal/hari, protein {} g/hari\n\n"
-        "## Olahraga minggu ini\n{}\n\n"
+        "## Olahraga\n{}\n\n"
         "Berikan analisa dalam format:\n\n"
         "**Evaluasi:**\n"
         "Apakah intake kalori mendukung target weight loss? "
-        "Apakah protein cukup? Apakah deficit terlalu besar atau kurang? "
+        "Apakah protein cukup (target 1.6g/kg)? Apakah deficit terlalu besar atau kurang? "
         "Bagaimana nutrisi terhadap beban latihan? "
-        "Bagaimana trend berat badan?\n\n"
-        "**Terus lakukan:**\n- (2-3 hal)\n\n"
-        "**Stop/kurangi:**\n- (1-2 hal)\n\n"
-        "**Mulai lakukan:**\n- (2-3 hal)\n\n"
-        "Reference angka aktual. Jangan generik. Maksimal 350 kata.\n\n"
+        "Bagaimana trend berat badan? Apakah data berat up to date?\n\n"
+        "**Terus lakukan:**\n- (2-3 hal spesifik berdasarkan data)\n\n"
+        "**Stop/kurangi:**\n- (1-2 hal spesifik berdasarkan data)\n\n"
+        "**Mulai lakukan:**\n- (2-3 hal spesifik berdasarkan data)\n\n"
+        "Reference angka aktual dari data. Jangan generik. Maksimal 400 kata.\n\n"
         "PENTING FORMAT:\n"
         "- Jangan tulis heading (# atau ##)\n"
         "- Jangan pakai tabel markdown (| kolom |)\n"
         "- Gunakan **bold** untuk label, bullet list untuk daftar"
     ).format(
+        week_context,
         kb_content or "(no profile)",
         goals_content or "(no goals)",
         weight_summary or "(belum ada data berat)",
@@ -369,12 +432,12 @@ async def generate_weight_review(
     try:
         response = claude_client.messages.create(
             model=MODEL,
-            max_tokens=800,
+            max_tokens=900,
             messages=[{"role": "user", "content": prompt}],
         )
         insight = "".join(b.text for b in response.content if b.type == "text").strip()
     except Exception as e:
-        print("Weight review insight failed: {}".format(e))
+        print("Nutrition weekly review insight failed: {}".format(e))
         insight = ""
 
     if insight:
@@ -387,6 +450,11 @@ async def generate_weight_review(
                 inline=False,
             )
 
-    embed.set_footer(text="Data minggu ini · nutrisi + Strava")
+    footer = "Nutrisi + Strava"
+    if is_current_week:
+        footer += " · minggu berjalan"
+    else:
+        footer += " · minggu selesai"
+    embed.set_footer(text=footer)
 
     return embed, insight
