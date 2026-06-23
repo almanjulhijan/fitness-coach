@@ -19,6 +19,7 @@ from enrichment import (
     heat_adjusted_pace,
 )
 from strava.client import StravaClient
+import supabase_client as supa
 
 WIB = timezone(timedelta(hours=7))
 RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
@@ -537,7 +538,7 @@ def _build_prompt(
     if gym_flags:
         lines.append(f"- Gym×Run flags: {'; '.join(gym_flags)}")
     if weight_kg:
-        lines.append(f"- Berat badan hari ini: {weight_kg} kg")
+        lines.append(f"- Berat badan terkini: {weight_kg} kg")
     gp_pace = goal_progress.get("best_pace_sec")
     gp_hr = goal_progress.get("best_hr")
     if gp_pace and gp_hr:
@@ -600,7 +601,7 @@ def _build_embed(
     prev_avg_decoupling, avg_adj_pace, prev_avg_adj_pace,
     weather_insight, tod_analysis, gym_flags, schedule_grid,
     goal_progress, weight_kg, insight, goal_reflection,
-    is_current_week=False,
+    weight_trend=None, is_current_week=False,
 ) -> discord.Embed:
     week_end = week_start + timedelta(days=6)
     now_wib = datetime.now(WIB)
@@ -621,7 +622,11 @@ def _build_embed(
     if is_current_week:
         desc += " (minggu berjalan)"
     if weight_kg:
-        desc += f" · ⚖️ {weight_kg} kg"
+        weight_str = f"⚖️ {weight_kg:.1f} kg"
+        if weight_trend and weight_trend.get("change_kg") is not None:
+            sign = "+" if weight_trend["change_kg"] >= 0 else ""
+            weight_str += f" ({sign}{weight_trend['change_kg']:.1f})"
+        desc += f" · {weight_str}"
     embed = discord.Embed(title=title, description=desc, color=0xFC4C02)
 
     # Volume
@@ -721,6 +726,10 @@ async def generate_weekly_analysis(
 
     weeks_ago=0 → current (in-progress) week, weeks_ago=1 → last completed week.
     """
+    if weight_kg is None:
+        weight_kg = supa.get_latest_weight()
+    weight_trend = supa.get_weight_trend(weeks=4)
+
     week_start, week_end = _week_range(weeks_ago=weeks_ago)
     prev_start, prev_end = _week_range(weeks_ago=weeks_ago + 1)
 
@@ -792,8 +801,24 @@ async def generate_weekly_analysis(
         prev_avg_adj_pace=prev_avg_adj_pace, weather_insight=weather_insight,
         tod_analysis=tod_analysis, gym_flags=gym_flags, schedule_grid=schedule_grid,
         goal_progress=goal_progress, weight_kg=weight_kg, insight=insight,
-        goal_reflection=goal_reflection, is_current_week=(weeks_ago == 0),
+        goal_reflection=goal_reflection, weight_trend=weight_trend,
+        is_current_week=(weeks_ago == 0),
     )
+
+    supa.save_weekly_snapshot({
+        "week_start": week_start.strftime("%Y-%m-%d"),
+        "week_end": (week_start + timedelta(days=6)).strftime("%Y-%m-%d"),
+        "total_km": round(total_km, 2),
+        "run_count": len(this_runs),
+        "gym_count": len(this_gym),
+        "avg_hr": avg_hr,
+        "zones_agg": zones_agg or None,
+        "avg_decoupling": avg_decoupling,
+        "avg_adj_pace_sec": avg_adj_pace,
+        "weight_kg": weight_kg,
+        "insight": insight or None,
+        "goal_reflection": goal_reflection or None,
+    })
 
     # Build plain-text summary for conversation history injection
     zone_str = ", ".join(f"{z}: {p}%" for z, p in zones_agg.items()) if zones_agg else "—"
