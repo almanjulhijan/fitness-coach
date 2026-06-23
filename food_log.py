@@ -115,6 +115,23 @@ async def analyze_food(user_content, claude_client: anthropic.Anthropic) -> disc
             print(f"Failed to save food log to Supabase: {e}")
             import traceback; traceback.print_exc()
 
+    # Running protein total for today vs target
+    if saved and supa:
+        try:
+            today_entries = supa.get_food_today()
+            today_protein = sum(float(e.get("protein") or 0) for e in today_entries)
+            current_weight = supa.get_latest_weight() or 78
+            protein_target = current_weight * 1.5
+            pct = round(today_protein / protein_target * 100) if protein_target else 0
+            icon = "✅" if pct >= 100 else "⚠️" if pct >= 60 else "❌"
+            embed.add_field(
+                name="Protein hari ini",
+                value=f"{icon} **{today_protein:.0f}g** / {protein_target:.0f}g target ({pct}%)",
+                inline=False,
+            )
+        except Exception as e:
+            print(f"Failed to compute daily protein: {e}")
+
     if saved:
         embed.set_footer(text="📸 food log · ✅ saved to db · fitness-coach")
     elif save_error:
