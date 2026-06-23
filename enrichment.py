@@ -16,7 +16,14 @@ RUN_SPORTS = {"Run", "TrailRun", "VirtualRun"}
 
 
 def _read_max_hr_from_kb(default: int = 185) -> int:
-    """Read Max HR from knowledge_base/about_me.md. Falls back to default."""
+    """Read Max HR from Supabase, fallback to about_me.md, then default."""
+    try:
+        import db
+        val = db.get_profile_field("Max HR")
+        if val and val.strip().isdigit():
+            return int(val)
+    except Exception:
+        pass
     import re
     kb_path = os.path.join(os.path.dirname(__file__), "knowledge_base", "about_me.md")
     try:

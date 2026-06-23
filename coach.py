@@ -24,15 +24,12 @@ from post_run import post_run_analysis
 from weekly_analysis import generate_weekly_analysis, generate_zone2_review
 from nutrition import (
     analyze_food,
-    save_food_entry,
-    load_daily_entries,
     build_daily_embed,
     build_food_reply_embed,
     generate_weight_review,
-    save_weight,
-    get_current_weight,
     build_weight_embed,
 )
+import db
 
 load_dotenv()
 
@@ -71,7 +68,7 @@ TOOLS = [
     {
         "name": "propose_profile_update",
         "description": (
-            "Propose updating a field in the athlete's profile (about_me.md). "
+            "Propose updating a field in the athlete's profile. "
             "Call this when the user mentions updated personal data: weight, HR zones, "
             "training paces, injuries, equipment, etc. "
             "The athlete will be shown a confirmation button before anything is saved. "
@@ -82,7 +79,7 @@ TOOLS = [
             "properties": {
                 "field": {
                     "type": "string",
-                    "description": "Field name as in about_me.md, e.g. 'Weight', 'Max HR', 'Easy pace (Zone 2)'",
+                    "description": "Field name, e.g. 'Weight', 'Max HR', 'Easy pace (Zone 2)'",
                 },
                 "value": {
                     "type": "string",
@@ -102,39 +99,15 @@ TOOLS = [
 # ── Profile helpers ─────────────────────────────────────────────────────────────
 
 def get_profile_field(field):
-    """Read current value of a **Field:** line from about_me.md."""
-    if not ABOUT_ME_FILE.exists():
-        return None
-    # Match value on same line only (no newline crossing)
-    pattern = re.compile(r'\*\*' + re.escape(field) + r':\*\*[^\S\n]*([^\n]*)')
-    for line in ABOUT_ME_FILE.read_text(encoding="utf-8").splitlines():
-        m = pattern.search(line)
-        if m:
-            val = m.group(1).strip()
-            return val if val else None
-    return None
+    return db.get_profile_field(field)
 
 
 def update_profile_field(field, value):
-    """Update or append a **Field:** value in about_me.md."""
-    KB_DIR.mkdir(exist_ok=True)
-    if not ABOUT_ME_FILE.exists():
-        ABOUT_ME_FILE.write_text(
-            "# About Me\n\n- **{}:** {}\n".format(field, value), encoding="utf-8"
-        )
-        return
-    text = ABOUT_ME_FILE.read_text(encoding="utf-8")
-    # Match **Field:** + rest of line (no newline crossing), replace whole thing
-    pattern = r'\*\*' + re.escape(field) + r':\*\*[^\n]*'
-    replacement = '**{}:** {}'.format(field, value)
-    new_text, n = re.subn(pattern, replacement, text)
-    if n == 0:
-        new_text = text.rstrip() + "\n- **{}:** {}\n".format(field, value)
-    ABOUT_ME_FILE.write_text(new_text, encoding="utf-8")
+    db.update_profile_field(field, value)
 
 
 def extract_strava_profile_updates(athlete, activities):
-    """Return {field: (old_value, new_value)} for fields that differ from about_me.md."""
+    """Return {field: (old_value, new_value)} for fields that differ from the profile DB."""
     candidates = {}
     if athlete.get("weight"):
         candidates["Weight"] = "{:.1f} kg".format(athlete["weight"])
@@ -204,7 +177,6 @@ def load_knowledge_base():
         return ""
     parts = []
     for md_file in sorted(KB_DIR.glob("*.md")):
-        # skip per-category goals files — injected separately per message
         if md_file.name.startswith("goals_"):
             continue
         content = md_file.read_text(encoding="utf-8").strip()
@@ -212,6 +184,18 @@ def load_knowledge_base():
             parts.append("### {}\n\n{}".format(
                 md_file.stem.replace("_", " ").title(), content
             ))
+
+    # Overlay dynamic profile fields from Supabase
+    try:
+        db_fields = db.get_all_profile_fields()
+        if db_fields:
+            lines = ["### Dynamic Profile (live data)"]
+            for field, value in sorted(db_fields.items()):
+                lines.append("- **{}:** {}".format(field, value))
+            parts.append("\n".join(lines))
+    except Exception:
+        pass
+
     if not parts:
         return ""
     return "## Personal Knowledge Base\n\n" + "\n\n---\n\n".join(parts)
@@ -454,7 +438,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                     kb_content=kb,
                     goals_content=goals_content,
                     claude_client=claude,
-                    weight_kg=get_current_weight(),
+                    weight_kg=db.get_current_weight(),
                     weeks_ago=weeks_ago,
                 )
                 msg = await channel.send(embed=embed)
@@ -521,7 +505,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 await message.reply("❌ Gagal analisa makanan. Coba lagi ya.")
                 return
 
-            save_food_entry(entry)
+            db.save_food_entry(entry)
             embed = build_food_reply_embed(entry)
             await message.reply(embed=embed)
 
@@ -532,10 +516,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             await interaction.response.send_message("⚠️ Berat harus antara 30-200 kg.")
             return
 
-        entry = save_weight(kg)
-
-        # Auto-update about_me.md
-        update_profile_field("Weight", "{:.1f} kg".format(kg))
+        entry = db.save_weight(kg)
         state["kb_content"] = load_knowledge_base()
 
         embed = build_weight_embed(entry)
@@ -543,7 +524,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
 
     @bot.tree.command(name="food-today", description="Lihat food log hari ini")
     async def food_today_command(interaction: discord.Interaction) -> None:
-        entries = load_daily_entries()
+        entries = db.load_daily_entries()
         if not entries:
             await interaction.response.send_message("Belum ada food log hari ini. Kirim foto/text makanan di #food-log!")
             return
@@ -608,7 +589,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                 await interaction.channel.send(f"❌ Zone 2 review gagal: {e}")
 
     async def apply_strava_profile_updates(athlete, activities):
-        """Auto-update about_me.md from Strava data and notify #feed if anything changed."""
+        """Auto-update profile DB from Strava data and notify #feed if anything changed."""
         updates = extract_strava_profile_updates(athlete, activities)
         if not updates:
             return
