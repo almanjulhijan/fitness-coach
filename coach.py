@@ -521,7 +521,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
     async def nutrition_daily_command(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("Generating daily recap...")
         try:
-            embed = await generate_daily_review()
+            embed = await generate_daily_review(claude_client=claude)
             await interaction.channel.send(embed=embed)
         except Exception as e:
             await interaction.channel.send(f"❌ Daily review gagal: {e}")
@@ -536,7 +536,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             print("⚠️ #food-log channel not found for daily recap.")
             return
         try:
-            embed = await generate_daily_review()
+            embed = await generate_daily_review(claude_client=claude)
             await channel.send(embed=embed)
         except Exception as e:
             print(f"Daily review auto-post failed: {e}")
