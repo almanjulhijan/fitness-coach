@@ -7,6 +7,7 @@ import anthropic
 import discord
 
 from enrichment import enrich_activity
+import supabase_client as supa
 
 WIB = timezone(timedelta(hours=7))
 
@@ -77,7 +78,7 @@ def _embed_color(aqi_val: int | None, decoupling: float | None) -> int:
 
 # ── Claude insight generation ───────────────────────────────────────────────────
 
-def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals_content: str) -> str:
+def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals_content: str, weight_kg: float | None = None) -> str:
     dist_km = activity.get("distance", 0) / 1000
     moving = activity.get("moving_time", 0)
     avg_hr = activity.get("average_heartrate")
@@ -101,6 +102,8 @@ def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals
         "- Duration: {}".format(_fmt_duration(moving)),
         "- Pace: {}".format(pace_str),
     ]
+    if weight_kg:
+        lines.append("- Berat badan saat ini: {:.1f} kg".format(weight_kg))
     if adj_pace_str and adj_pace_str != pace_str:
         lines.append("- Heat-adjusted equivalent pace: {}".format(adj_pace_str))
     if avg_hr:
@@ -455,9 +458,12 @@ async def post_run_analysis(
 
     enriched = await enrich_activity(activity, activities)
 
+    start_dt = datetime.fromisoformat(activity["start_date"].replace("Z", "+00:00"))
+    weight_kg = supa.get_weight_at(start_dt)
+
     goal_checks = _generate_goal_alignment(activity, enriched, goals_content, claude_client)
 
-    prompt = _build_insight_prompt(activity, enriched, kb_content, goals_content)
+    prompt = _build_insight_prompt(activity, enriched, kb_content, goals_content, weight_kg=weight_kg)
     insight = _generate_insight(prompt, claude_client)
 
     embed = build_embed(activity, enriched, insight, goal_checks=goal_checks)

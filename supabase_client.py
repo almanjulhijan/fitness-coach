@@ -66,6 +66,24 @@ def get_weight_history(days: int = 90) -> list[dict]:
     return resp.data or []
 
 
+def get_weight_at(timestamp: datetime) -> float | None:
+    """Return the most recent weight entry logged on or before *timestamp*."""
+    sb = get_supabase()
+    if not sb:
+        return None
+    resp = (
+        sb.table("weight_log")
+        .select("weight_kg")
+        .lte("logged_at", timestamp.isoformat())
+        .order("logged_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if resp.data:
+        return float(resp.data[0]["weight_kg"])
+    return get_latest_weight()
+
+
 def get_weight_trend(weeks: int = 4) -> dict:
     """Return current weight, previous week's weight, and change."""
     history = get_weight_history(days=weeks * 7 + 7)

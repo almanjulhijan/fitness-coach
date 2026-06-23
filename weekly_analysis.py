@@ -404,6 +404,16 @@ def _fmt_pace(sec_km: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _weight_context_str(current: float | None, historical: float | None) -> str:
+    if not current:
+        return ""
+    line = f"- Berat badan terkini: {current:.1f} kg"
+    if historical and abs(current - historical) >= 0.3:
+        sign = "+" if current > historical else ""
+        line += f" ({sign}{current - historical:.1f} kg vs 30 hari lalu)"
+    return line
+
+
 def _trunc(text: str, limit: int = 1024) -> str:
     """Truncate to Discord embed field limit."""
     if len(text) <= limit:
@@ -726,12 +736,15 @@ async def generate_weekly_analysis(
 
     weeks_ago=0 → current (in-progress) week, weeks_ago=1 → last completed week.
     """
-    if weight_kg is None:
-        weight_kg = supa.get_latest_weight()
-    weight_trend = supa.get_weight_trend(weeks=4)
-
     week_start, week_end = _week_range(weeks_ago=weeks_ago)
     prev_start, prev_end = _week_range(weeks_ago=weeks_ago + 1)
+
+    if weight_kg is None:
+        if weeks_ago == 0:
+            weight_kg = supa.get_latest_weight()
+        else:
+            weight_kg = supa.get_weight_at(week_end)
+    weight_trend = supa.get_weight_trend(weeks=4)
 
     this_runs = _filter_activities(activities, week_start, week_end, RUN_SPORTS)
     prev_runs = _filter_activities(activities, prev_start, prev_end, RUN_SPORTS)
@@ -935,10 +948,25 @@ async def generate_zone2_review(
     earliest_z2 = z2_with_pace[0] if z2_with_pace else None
     latest_z2 = z2_with_pace[-1] if len(z2_with_pace) > 1 else None
 
+    # Weight context for earliest vs latest comparison
+    weight_now = supa.get_latest_weight()
+    weight_30d_ago = None
+    if earliest_z2:
+        earliest_dt = datetime.fromisoformat(
+            earliest_z2["activity"]["start_date"].replace("Z", "+00:00")
+        )
+        weight_30d_ago = supa.get_weight_at(earliest_dt)
+
     # Build embed
+    desc = f"Analisa {total_runs} run dalam 30 hari terakhir · {total_z2} run dominan Zone 2 ({z2_ratio}%)"
+    if weight_now:
+        desc += f" · ⚖️ {weight_now:.1f} kg"
+        if weight_30d_ago and abs(weight_now - weight_30d_ago) >= 0.5:
+            sign = "+" if weight_now > weight_30d_ago else ""
+            desc += f" ({sign}{weight_now - weight_30d_ago:.1f} vs 30d lalu)"
     embed = discord.Embed(
         title="🫀 Zone 2 Progress Review",
-        description=f"Analisa {total_runs} run dalam 30 hari terakhir · {total_z2} run dominan Zone 2 ({z2_ratio}%)",
+        description=desc,
         color=0x5de08a,
     )
 
@@ -1107,7 +1135,8 @@ async def generate_zone2_review(
         "## Zone 2 Data (30 hari)\n"
         "- Total: {} run, {} dominan Zone 2 ({}%)\n"
         "- Max HR atlet: {} bpm, Zone 2 range: {}-{} bpm\n"
-        "{}\n{}\n\n"
+        "{}\n{}\n"
+        "{}\n\n"
         "## Weekly trend\n{}\n"
         "{}\n\n"
         "Berikan analisa dalam format:\n\n"
@@ -1130,6 +1159,7 @@ async def generate_zone2_review(
         max_hr, int(max_hr * 0.60), int(z2_upper),
         best_info,
         f"- Z2 ratio target: ≥80%, current: {z2_ratio}%",
+        _weight_context_str(weight_now, weight_30d_ago),
         trend_data,
         progress_info,
     )
