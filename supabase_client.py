@@ -4,7 +4,11 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from supabase import create_client, Client
+try:
+    from supabase import create_client, Client
+except ImportError:
+    create_client = None
+    Client = None
 
 WIB = timezone(timedelta(hours=7))
 

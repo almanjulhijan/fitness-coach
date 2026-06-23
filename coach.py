@@ -22,7 +22,11 @@ from strava.auth import get_valid_token
 from strava.client import StravaClient
 from post_run import post_run_analysis
 from weekly_analysis import generate_weekly_analysis, generate_zone2_review
-import supabase_client as supa
+try:
+    import supabase_client as supa
+except ImportError:
+    supa = None
+    print("Warning: supabase_client not available (missing supabase package?)")
 
 load_dotenv()
 
