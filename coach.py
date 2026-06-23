@@ -701,9 +701,29 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             )
         user_text = user_text.strip()
 
-        if not user_text:
+        # Build image blocks from attachments
+        image_types = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+        image_blocks = []
+        for att in msg.attachments:
+            if att.content_type and att.content_type.split(";")[0] in image_types:
+                image_blocks.append({
+                    "type": "image",
+                    "source": {"type": "url", "url": att.url},
+                })
+
+        if not user_text and not image_blocks:
             await msg.channel.send("Hey! Ask me anything about your training.")
             return
+
+        # Build user content: multimodal if images, plain string if text-only
+        if image_blocks:
+            user_content = image_blocks[:]
+            user_content.append({
+                "type": "text",
+                "text": user_text if user_text else "Analisis gambar ini.",
+            })
+        else:
+            user_content = user_text
 
         if isinstance(msg.channel, discord.Thread):
             parent = msg.channel.parent
@@ -718,7 +738,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             seeded = await _seed_history_from_discord(msg.channel, bot.user, before_msg=msg)
             channel_history.extend(seeded)
 
-        channel_history.append({"role": "user", "content": user_text})
+        channel_history.append({"role": "user", "content": user_content})
 
         if len(channel_history) > MAX_HISTORY:
             channel_history[:] = channel_history[-MAX_HISTORY:]
