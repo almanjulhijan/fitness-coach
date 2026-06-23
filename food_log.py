@@ -103,13 +103,23 @@ async def analyze_food(user_content, claude_client: anthropic.Anthropic) -> disc
         source = "text"
 
     # Save to Supabase
+    saved = False
+    save_error = ""
     if supa:
         try:
-            supa.log_food({**data, "source": source})
+            saved = supa.log_food({**data, "source": source})
+            if not saved:
+                save_error = "log_food returned False (no client?)"
         except Exception as e:
+            save_error = str(e)
             print(f"Failed to save food log to Supabase: {e}")
+            import traceback; traceback.print_exc()
 
-    saved_label = " · ✅ logged" if supa and supa.get_supabase() else ""
-    embed.set_footer(text=f"📸 food log · fitness-coach{saved_label}")
+    if saved:
+        embed.set_footer(text="📸 food log · ✅ saved to db · fitness-coach")
+    elif save_error:
+        embed.set_footer(text=f"📸 food log · ❌ {save_error[:80]} · fitness-coach")
+    else:
+        embed.set_footer(text="📸 food log · ⚠️ no db configured · fitness-coach")
 
     return embed

@@ -92,7 +92,7 @@ def log_food(data: dict) -> bool:
     """Save a food entry. data should have: name, portion, calories, protein, fat, carbs, etc."""
     sb = get_supabase()
     if not sb:
-        return False
+        raise RuntimeError("Supabase client not available")
     row = {
         "name": data.get("name", "Unknown"),
         "portion": data.get("portion"),
@@ -105,7 +105,9 @@ def log_food(data: dict) -> bool:
         "source": data.get("source", "photo"),
         "verdict": data.get("verdict"),
     }
-    sb.table("food_log").insert(row).execute()
+    resp = sb.table("food_log").insert(row).execute()
+    if not resp.data:
+        raise RuntimeError(f"Insert returned no data: {resp}")
     return True
 
 
