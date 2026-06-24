@@ -134,7 +134,8 @@ def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals
             lines.append("- {}: {}%".format(zone, pct))
 
     if decoupling is not None:
-        lines += ["", "## Aerobic decoupling: {}%".format(decoupling)]
+        dc_interp = "bagus (<5%)" if decoupling < 5 else ("moderate drift (5-10%)" if decoupling < 10 else "high drift (>10%), aerobic base perlu diperkuat")
+        lines += ["", "## Aerobic decoupling: {}% — {}".format(decoupling, dc_interp)]
 
     if load:
         days_into = load.get("days_into_week", 7)
@@ -166,6 +167,9 @@ def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals
         "## Training Goals\n{}\n\n"
         "Evaluate this run against the athlete's Training Goals above: "
         "flag if the effort level, HR zone distribution, or pace is misaligned with their targets. "
+        "Kalau ada data aerobic decoupling, WAJIB komentari: "
+        "apakah aerobic efficiency stabil (< 5%), mulai drift (5-10%), atau drift tinggi (> 10%)? "
+        "Apa implikasinya terhadap aerobic base dan apa yang perlu dilakukan? "
         "Highlight what's most actionable for their next session.\n\n"
         "{}"
     ).format(kb_content or "(no profile)", goals_content or "(no goals)", context_block)
@@ -210,12 +214,15 @@ def _generate_goal_alignment(
     pace_sec = enriched.get("pace_sec_km")
 
     days_into = training_load.get("days_into_week", 7)
+    decoupling = enriched.get("aerobic_decoupling")
+
     activity_summary = [
         "- Distance: {:.2f} km".format(dist_km),
         "- Duration: {}".format(_fmt_duration(moving)),
         "- Pace: {}".format(_fmt_pace(pace_sec) + "/km" if pace_sec else "unknown"),
         "- Avg HR: {} bpm".format(int(avg_hr)) if avg_hr else "",
         "- HR zones: {}".format(", ".join("{} {}%".format(z, p) for z, p in hr_zones.items())) if hr_zones else "",
+        "- Aerobic decoupling: {}%".format(decoupling) if decoupling is not None else "",
         "- This week so far: {} km ({} runs) — day {} of the week".format(
             training_load.get("this_week_km", 0),
             training_load.get("this_week_runs", 0),
@@ -236,7 +243,7 @@ def _generate_goal_alignment(
         "of 3-4 goal alignment checks. Each item must have:\n"
         '- "status": "ok", "warning", or "flag"\n'
         '- "text": one concise line in Bahasa Indonesia with specific numbers\n\n'
-        "Focus on: easy run HR zone ratio, pace vs goal pace, {}, "
+        "Focus on: easy run HR zone ratio, pace vs goal pace, aerobic decoupling, {}, "
         "intensity balance. Be specific with numbers. Return ONLY valid JSON, no prose.\n\n"
         "## Training Goals\n{}\n\n"
         "## This Run\n{}"
