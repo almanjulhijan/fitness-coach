@@ -231,23 +231,30 @@ def _generate_goal_alignment(
     ]
     activity_summary = "\n".join(l for l in activity_summary if l)
 
-    weekly_volume_instruction = (
-        "SKIP weekly volume/frequency check — it is only day {} of the week, "
-        "not enough data to judge weekly load yet.".format(days_into)
-        if days_into <= 2
-        else "weekly volume/frequency"
-    )
-
     prompt = (
         "Given these training goals and this single run's data, return a JSON array "
         "of 3-4 goal alignment checks. Each item must have:\n"
-        '- "status": "ok", "warning", or "flag"\n'
+        '- "status": "ok", "warning", "flag", or "in_progress"\n'
         '- "text": one concise line in Bahasa Indonesia with specific numbers\n\n'
-        "Focus on: easy run HR zone ratio, pace vs goal pace, aerobic decoupling, {}, "
-        "intensity balance. Be specific with numbers. Return ONLY valid JSON, no prose.\n\n"
+        "## PENTING — aturan status:\n"
+        '- "in_progress": gunakan untuk metrik mingguan (volume, frekuensi) yang masih berjalan. '
+        "Sekarang hari ke-{} dari 7 — JANGAN pakai flag/warning untuk volume/frekuensi mingguan "
+        "yang belum tercapai, karena minggu belum selesai. Gunakan in_progress.\n"
+        '- "ok": goal tercapai atau on track\n'
+        '- "warning": ada concern ringan\n'
+        '- "flag": ada masalah jelas yang perlu diperbaiki\n\n'
+        "## PENTING — long-term goals:\n"
+        "Goal seperti pace target (misal 6:00/km @ HR 140) adalah goal JANGKA PANJANG. "
+        "JANGAN flag bahwa pace saat ini belum mencapai target itu — itu memang belum tercapai. "
+        "Sebaliknya, evaluasi apakah LATIHAN INI berkontribusi menuju goal tersebut: "
+        "apakah zona HR tepat untuk membangun aerobic base? Apakah decoupling menunjukkan "
+        "efisiensi membaik? Apakah effort level sesuai untuk tahap training saat ini?\n\n"
+        "Focus on: easy run HR zone ratio, aerobic decoupling, training contribution "
+        "toward long-term goals, intensity balance. Be specific with numbers. "
+        "Return ONLY valid JSON, no prose.\n\n"
         "## Training Goals\n{}\n\n"
         "## This Run\n{}"
-    ).format(weekly_volume_instruction, goals_content, activity_summary)
+    ).format(days_into, goals_content, activity_summary)
 
     try:
         response = claude_client.messages.create(
@@ -415,7 +422,7 @@ def build_embed(activity: dict, enriched: dict, insight: str, goal_checks: list 
 
     # ── Goal alignment ────────────────────────────────────────────────────────
     if goal_checks:
-        icon_map = {"ok": "✅", "warning": "⚠️", "flag": "❌"}
+        icon_map = {"ok": "✅", "warning": "⚠️", "flag": "❌", "in_progress": "🔄"}
         check_lines = [
             "{} {}".format(icon_map.get(c.get("status", "ok"), "•"), c.get("text", ""))
             for c in goal_checks
