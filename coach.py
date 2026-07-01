@@ -117,18 +117,25 @@ TOOLS = [
     {
         "name": "get_food_log",
         "description": (
-            "Fetch the athlete's food log from the database for a specific date. "
+            "Fetch the athlete's food log from the database. "
             "Call this whenever the user asks about their diet, nutrition, food intake, "
             "kalori, protein, or anything related to what they ate. "
-            "Use 'today' or 'yesterday' for convenience, or a YYYY-MM-DD date string."
+            "Use 'today' or 'yesterday' for a single day, or a YYYY-MM-DD date string. "
+            "Use days_back > 1 when the user asks about 'sejauh ini', 'minggu ini', "
+            "'belakangan', 'beberapa hari', 'overall', or any multi-day period — "
+            "set days_back=7 for a week, 30 for a month."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "date": {
                     "type": "string",
-                    "description": "Date to fetch: 'today', 'yesterday', or 'YYYY-MM-DD'. Default: 'today'.",
-                }
+                    "description": "Starting date: 'today', 'yesterday', or 'YYYY-MM-DD'. Default: 'today'.",
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": "How many days to fetch going back from 'date' (inclusive). Default: 1 (just that day). Use 7 for a week, 30 for a month.",
+                },
             },
             "required": [],
         },
@@ -276,6 +283,9 @@ You have tools to read and update the athlete's goals for this sport category. U
 You have a get_food_log tool to fetch real food log data from the database.
 - Call it FIRST whenever the user asks about their diet, food, nutrition, kalori, protein, or what they ate
 - Use 'today' for today's log, 'yesterday' for d-1, or a YYYY-MM-DD date string
+- Use days_back=7 when user asks "sejauh ini", "belakangan", "minggu ini", "recent", or any multi-day/overall diet question
+- Use days_back=30 for monthly or longer-term analysis
+- If today has no data, do NOT stop — fetch more days (days_back=7) to get the full picture
 - NEVER say you don't have access to food data — always call the tool and then answer
 
 ## Profile management
@@ -983,24 +993,44 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
 
                             elif block.name == "get_food_log":
                                 date_input = block.input.get("date", "today")
+                                days_back = max(1, int(block.input.get("days_back", 1)))
                                 now_wib = datetime.now(WIB)
                                 if date_input == "today":
-                                    date_str = now_wib.strftime("%Y-%m-%d")
+                                    anchor = now_wib
                                 elif date_input == "yesterday":
-                                    date_str = (now_wib - timedelta(days=1)).strftime("%Y-%m-%d")
+                                    anchor = now_wib - timedelta(days=1)
                                 else:
-                                    date_str = date_input
-                                entries = supa.get_food_for_date(date_str) if supa else []
-                                if not entries:
-                                    result = f"No food log entries found for {date_str}."
-                                else:
-                                    total_cal = sum(e.get("calories") or 0 for e in entries)
-                                    total_pro = sum(float(e.get("protein") or 0) for e in entries)
-                                    total_fat = sum(float(e.get("fat") or 0) for e in entries)
-                                    total_carb = sum(float(e.get("carbs") or 0) for e in entries)
-                                    total_sugar = sum(float(e.get("sugar") or 0) for e in entries)
-                                    total_fiber = sum(float(e.get("fiber") or 0) for e in entries)
-                                    lines = [f"Food log for {date_str} ({len(entries)} entries):"]
+                                    anchor = datetime.strptime(date_input, "%Y-%m-%d").replace(tzinfo=WIB)
+
+                                dates = [
+                                    (anchor - timedelta(days=i)).strftime("%Y-%m-%d")
+                                    for i in range(days_back)
+                                ]
+
+                                lines = []
+                                grand_cal = grand_pro = grand_fat = grand_carb = grand_sugar = grand_fiber = 0.0
+                                days_with_data = 0
+
+                                for ds in reversed(dates):
+                                    entries = supa.get_food_for_date(ds) if supa else []
+                                    if not entries:
+                                        if days_back == 1:
+                                            result = f"No food log entries found for {ds}."
+                                            break
+                                        lines.append(f"\n{ds}: no log")
+                                        continue
+
+                                    days_with_data += 1
+                                    d_cal = sum(e.get("calories") or 0 for e in entries)
+                                    d_pro = sum(float(e.get("protein") or 0) for e in entries)
+                                    d_fat = sum(float(e.get("fat") or 0) for e in entries)
+                                    d_carb = sum(float(e.get("carbs") or 0) for e in entries)
+                                    d_sugar = sum(float(e.get("sugar") or 0) for e in entries)
+                                    d_fiber = sum(float(e.get("fiber") or 0) for e in entries)
+                                    grand_cal += d_cal; grand_pro += d_pro; grand_fat += d_fat
+                                    grand_carb += d_carb; grand_sugar += d_sugar; grand_fiber += d_fiber
+
+                                    lines.append(f"\n{ds} ({len(entries)} items) — {d_cal} kkal | P:{d_pro:.0f}g F:{d_fat:.0f}g C:{d_carb:.0f}g")
                                     for e in entries:
                                         t_str = ""
                                         if e.get("logged_at"):
@@ -1014,12 +1044,23 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                                             f"{e.get('calories',0)} kkal, P:{float(e.get('protein') or 0):.0f}g "
                                             f"F:{float(e.get('fat') or 0):.0f}g C:{float(e.get('carbs') or 0):.0f}g"
                                         )
-                                    lines.append(
-                                        f"TOTAL: {total_cal} kkal | Protein:{total_pro:.0f}g | "
-                                        f"Fat:{total_fat:.0f}g | Carbs:{total_carb:.0f}g | "
-                                        f"Sugar:{total_sugar:.0f}g | Fiber:{total_fiber:.0f}g"
-                                    )
-                                    result = "\n".join(lines)
+                                else:
+                                    header = f"Food log: {dates[-1]} to {dates[0]} ({days_with_data}/{days_back} days have data)"
+                                    if days_with_data > 1:
+                                        avg_cal = grand_cal / days_with_data
+                                        avg_pro = grand_pro / days_with_data
+                                        summary = (
+                                            f"\nOVERALL TOTAL ({days_with_data} days): "
+                                            f"{grand_cal:.0f} kkal | P:{grand_pro:.0f}g F:{grand_fat:.0f}g C:{grand_carb:.0f}g"
+                                            f"\nDAILY AVERAGE: {avg_cal:.0f} kkal | P:{avg_pro:.0f}g"
+                                        )
+                                    else:
+                                        summary = (
+                                            f"\nTOTAL: {grand_cal:.0f} kkal | P:{grand_pro:.0f}g | "
+                                            f"F:{grand_fat:.0f}g | C:{grand_carb:.0f}g | "
+                                            f"Sugar:{grand_sugar:.0f}g | Fiber:{grand_fiber:.0f}g"
+                                        )
+                                    result = header + "\n".join(lines) + summary
 
                             elif block.name == "propose_profile_update":
                                 field = block.input["field"]
