@@ -114,6 +114,25 @@ TOOLS = [
             "required": ["weight_kg"],
         },
     },
+    {
+        "name": "get_food_log",
+        "description": (
+            "Fetch the athlete's food log from the database for a specific date. "
+            "Call this whenever the user asks about their diet, nutrition, food intake, "
+            "kalori, protein, or anything related to what they ate. "
+            "Use 'today' or 'yesterday' for convenience, or a YYYY-MM-DD date string."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "Date to fetch: 'today', 'yesterday', or 'YYYY-MM-DD'. Default: 'today'.",
+                }
+            },
+            "required": [],
+        },
+    },
 ]
 
 
@@ -252,6 +271,12 @@ You have tools to read and update the athlete's goals for this sport category. U
 - When the athlete mentions a new goal or target, call set_goals with the updated list
 - When asked about goals, call get_goals or refer to the goals already in your context
 - Always confirm after saving: tell the athlete what you saved
+
+## Nutrition data
+You have a get_food_log tool to fetch real food log data from the database.
+- Call it FIRST whenever the user asks about their diet, food, nutrition, kalori, protein, or what they ate
+- Use 'today' for today's log, 'yesterday' for d-1, or a YYYY-MM-DD date string
+- NEVER say you don't have access to food data — always call the tool and then answer
 
 ## Profile management
 You have a tool to propose profile updates (propose_profile_update). Use it when:
@@ -955,6 +980,46 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
                                     category_name, state["kb_content"], state["activities_summary"]
                                 )
                                 result = f"Weight logged: {w:.1f} kg."
+
+                            elif block.name == "get_food_log":
+                                date_input = block.input.get("date", "today")
+                                now_wib = datetime.now(WIB)
+                                if date_input == "today":
+                                    date_str = now_wib.strftime("%Y-%m-%d")
+                                elif date_input == "yesterday":
+                                    date_str = (now_wib - timedelta(days=1)).strftime("%Y-%m-%d")
+                                else:
+                                    date_str = date_input
+                                entries = supa.get_food_for_date(date_str) if supa else []
+                                if not entries:
+                                    result = f"No food log entries found for {date_str}."
+                                else:
+                                    total_cal = sum(e.get("calories") or 0 for e in entries)
+                                    total_pro = sum(float(e.get("protein") or 0) for e in entries)
+                                    total_fat = sum(float(e.get("fat") or 0) for e in entries)
+                                    total_carb = sum(float(e.get("carbs") or 0) for e in entries)
+                                    total_sugar = sum(float(e.get("sugar") or 0) for e in entries)
+                                    total_fiber = sum(float(e.get("fiber") or 0) for e in entries)
+                                    lines = [f"Food log for {date_str} ({len(entries)} entries):"]
+                                    for e in entries:
+                                        t_str = ""
+                                        if e.get("logged_at"):
+                                            try:
+                                                t = datetime.fromisoformat(e["logged_at"]).astimezone(WIB)
+                                                t_str = t.strftime("%H:%M")
+                                            except Exception:
+                                                pass
+                                        lines.append(
+                                            f"  {t_str} | {e.get('name','?')} ({e.get('portion','')}) — "
+                                            f"{e.get('calories',0)} kkal, P:{float(e.get('protein') or 0):.0f}g "
+                                            f"F:{float(e.get('fat') or 0):.0f}g C:{float(e.get('carbs') or 0):.0f}g"
+                                        )
+                                    lines.append(
+                                        f"TOTAL: {total_cal} kkal | Protein:{total_pro:.0f}g | "
+                                        f"Fat:{total_fat:.0f}g | Carbs:{total_carb:.0f}g | "
+                                        f"Sugar:{total_sugar:.0f}g | Fiber:{total_fiber:.0f}g"
+                                    )
+                                    result = "\n".join(lines)
 
                             elif block.name == "propose_profile_update":
                                 field = block.input["field"]
