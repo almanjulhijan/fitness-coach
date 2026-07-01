@@ -121,9 +121,8 @@ TOOLS = [
             "Call this whenever the user asks about their diet, nutrition, food intake, "
             "kalori, protein, or anything related to what they ate. "
             "Use 'today' or 'yesterday' for a single day, or a YYYY-MM-DD date string. "
-            "Use days_back > 1 when the user asks about 'sejauh ini', 'minggu ini', "
-            "'belakangan', 'beberapa hari', 'overall', or any multi-day period — "
-            "set days_back=7 for a week, 30 for a month."
+            "Use days_back > 1 for any multi-day question — infer the right number from context "
+            "(e.g. 'minggu ini'=7, 'sejauh ini'/'belakangan'=14-30, 'bulan ini'=30). Max 30."
         ),
         "input_schema": {
             "type": "object",
@@ -283,9 +282,8 @@ You have tools to read and update the athlete's goals for this sport category. U
 You have a get_food_log tool to fetch real food log data from the database.
 - Call it FIRST whenever the user asks about their diet, food, nutrition, kalori, protein, or what they ate
 - Use 'today' for today's log, 'yesterday' for d-1, or a YYYY-MM-DD date string
-- Use days_back=7 when user asks "sejauh ini", "belakangan", "minggu ini", "recent", or any multi-day/overall diet question
-- Use days_back=30 for monthly or longer-term analysis
-- If today has no data, do NOT stop — fetch more days (days_back=7) to get the full picture
+- Infer days_back from context: "minggu ini"=7, "sejauh ini"/"belakangan"=14-30, "bulan ini"=30 — don't always default to 7
+- If today has no data, do NOT stop — fetch more days with appropriate days_back
 - NEVER say you don't have access to food data — always call the tool and then answer
 
 ## Profile management
@@ -993,7 +991,7 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
 
                             elif block.name == "get_food_log":
                                 date_input = block.input.get("date", "today")
-                                days_back = max(1, int(block.input.get("days_back", 1)))
+                                days_back = min(30, max(1, int(block.input.get("days_back", 1))))
                                 now_wib = datetime.now(WIB)
                                 if date_input == "today":
                                     anchor = now_wib
