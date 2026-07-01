@@ -93,10 +93,12 @@ def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals
     load = enriched.get("training_load") or {}
     milestones = enriched.get("milestones") or []
     hr_baseline = enriched.get("hr_baseline")
+    detected_run_type = _detect_run_type(activity, hr_zones)
 
     lines = [
         "## Activity",
         "- Type: {}".format(sport),
+        "- Detected run type: {}".format(detected_run_type),
         "- Distance: {:.2f} km".format(dist_km),
         "- Duration: {}".format(_fmt_duration(moving)),
         "- Pace: {}".format(pace_str),
@@ -165,14 +167,19 @@ def _build_insight_prompt(activity: dict, enriched: dict, kb_content: str, goals
         "numbers. Don't be generic. Don't start with 'Bagus!' or 'Luar biasa!'.\n\n"
         "## Athlete Profile\n{}\n\n"
         "## Training Goals\n{}\n\n"
-        "Evaluate this run against the athlete's Training Goals above: "
-        "flag if the effort level, HR zone distribution, or pace is misaligned with their targets. "
+        "{}\n\n"
+        "Evaluate this run in context of its type and the athlete's Training Goals. "
         "Kalau ada data aerobic decoupling, WAJIB komentari: "
         "apakah aerobic efficiency stabil (< 5%), mulai drift (5-10%), atau drift tinggi (> 10%)? "
         "Apa implikasinya terhadap aerobic base dan apa yang perlu dilakukan? "
         "Highlight what's most actionable for their next session.\n\n"
         "{}"
-    ).format(kb_content or "(no profile)", goals_content or "(no goals)", context_block)
+    ).format(
+        kb_content or "(no profile)",
+        goals_content or "(no goals)",
+        _run_type_zone_context(detected_run_type),
+        context_block,
+    )
 
     return prompt
 
@@ -190,6 +197,70 @@ def _generate_insight(prompt: str, claude_client: anthropic.Anthropic) -> str:
         return ""
 
 
+def _detect_run_type(activity: dict, hr_zones: dict) -> str:
+    """Infer run type from activity name and HR zone distribution."""
+    name = (activity.get("name") or "").lower()
+    z3 = hr_zones.get("Zone 3", 0)
+    z4 = hr_zones.get("Zone 4", 0)
+    z5 = hr_zones.get("Zone 5", 0)
+    z2 = hr_zones.get("Zone 2", 0)
+    high = z3 + z4 + z5
+
+    TEMPO_WORDS = {"tempo", "threshold", "cruise", "lactate", "lt"}
+    INTERVAL_WORDS = {"interval", "repeat", "rep", "vo2", "speed", "track", "fartlek"}
+    LONG_WORDS = {"long", "longrun", "long run", "lsd", "endurance"}
+    EASY_WORDS = {"easy", "recovery", "santai", "aerobik", "aerobic", "base", "pemulihan"}
+
+    for w in TEMPO_WORDS:
+        if w in name:
+            return "tempo"
+    for w in INTERVAL_WORDS:
+        if w in name:
+            return "interval"
+    for w in LONG_WORDS:
+        if w in name:
+            return "long"
+    for w in EASY_WORDS:
+        if w in name:
+            return "easy"
+
+    # Infer from zones if name doesn't tell us
+    if hr_zones:
+        if z4 + z5 > 30:
+            return "interval"
+        if z3 > 40 and z2 < 40:
+            return "tempo"
+        if z2 > 50:
+            return "easy"
+
+    return "easy"  # default assumption
+
+
+def _run_type_zone_context(run_type: str) -> str:
+    """Return zone expectation guidance for a given run type."""
+    return {
+        "easy": (
+            "Ini adalah EASY RUN. Target zona: ≥80% Zone 1+2. "
+            "Flag jika Zone 3+ mendominasi karena itu tanda effort terlalu tinggi."
+        ),
+        "long": (
+            "Ini adalah LONG RUN. Target zona: ≥75% Zone 1+2, Zone 3 boleh sedikit di akhir. "
+            "Flag jika Zone 4+ signifikan karena risiko overtraining."
+        ),
+        "tempo": (
+            "Ini adalah TEMPO RUN. Target zona: Zone 3 mendominasi (60-80%) adalah NORMAL dan BENAR. "
+            "JANGAN flag Zone 2 rendah — itu justru salah untuk tempo. "
+            "Evaluasi: apakah pace/HR konsisten (decoupling rendah)? Apakah durasi/jarak masuk akal?"
+        ),
+        "interval": (
+            "Ini adalah INTERVAL RUN. Zone 4-5 mendominasi adalah NORMAL dan BENAR. "
+            "JANGAN flag Zone 2 rendah. "
+            "Evaluasi: apakah ada variasi pace antar interval (bisa dilihat dari decoupling)? "
+            "Recovery cukup antara repetisi?"
+        ),
+    }.get(run_type, "")
+
+
 def _generate_goal_alignment(
     activity: dict,
     enriched: dict,
@@ -198,7 +269,7 @@ def _generate_goal_alignment(
 ) -> list[dict]:
     """Ask Claude to evaluate this run against the athlete's goals.
 
-    Returns a list of {"status": "ok"|"warning"|"flag", "text": "..."} dicts.
+    Returns a list of {"status": "ok"|"warning"|"flag"|"in_progress", "text": "..."} dicts.
     Returns [] on failure or if no goals.
     """
     if not goals_content or not goals_content.strip():
@@ -216,7 +287,12 @@ def _generate_goal_alignment(
     days_into = training_load.get("days_into_week", 7)
     decoupling = enriched.get("aerobic_decoupling")
 
+    run_type = _detect_run_type(activity, hr_zones)
+    zone_context = _run_type_zone_context(run_type)
+
     activity_summary = [
+        "- Activity name: {}".format(activity.get("name", "")),
+        "- Detected run type: {}".format(run_type),
         "- Distance: {:.2f} km".format(dist_km),
         "- Duration: {}".format(_fmt_duration(moving)),
         "- Pace: {}".format(_fmt_pace(pace_sec) + "/km" if pace_sec else "unknown"),
@@ -236,25 +312,23 @@ def _generate_goal_alignment(
         "of 3-4 goal alignment checks. Each item must have:\n"
         '- "status": "ok", "warning", "flag", or "in_progress"\n'
         '- "text": one concise line in Bahasa Indonesia with specific numbers\n\n'
+        "## PENTING — tipe run ini:\n"
+        "{}\n\n"
         "## PENTING — aturan status:\n"
-        '- "in_progress": gunakan untuk metrik mingguan (volume, frekuensi) yang masih berjalan. '
-        "Sekarang hari ke-{} dari 7 — JANGAN pakai flag/warning untuk volume/frekuensi mingguan "
-        "yang belum tercapai, karena minggu belum selesai. Gunakan in_progress.\n"
+        '- "in_progress": untuk metrik mingguan (volume, frekuensi) yang masih berjalan. '
+        "Sekarang hari ke-{} dari 7 — jangan flag/warning untuk volume yang belum tercapai.\n"
         '- "ok": goal tercapai atau on track\n'
         '- "warning": ada concern ringan\n'
         '- "flag": ada masalah jelas yang perlu diperbaiki\n\n'
         "## PENTING — long-term goals:\n"
-        "Goal seperti pace target (misal 6:00/km @ HR 140) adalah goal JANGKA PANJANG. "
-        "JANGAN flag bahwa pace saat ini belum mencapai target itu — itu memang belum tercapai. "
-        "Sebaliknya, evaluasi apakah LATIHAN INI berkontribusi menuju goal tersebut: "
-        "apakah zona HR tepat untuk membangun aerobic base? Apakah decoupling menunjukkan "
-        "efisiensi membaik? Apakah effort level sesuai untuk tahap training saat ini?\n\n"
-        "Focus on: easy run HR zone ratio, aerobic decoupling, training contribution "
-        "toward long-term goals, intensity balance. Be specific with numbers. "
-        "Return ONLY valid JSON, no prose.\n\n"
+        "Goal pace (misal 6:00/km @ HR 140) adalah goal JANGKA PANJANG. "
+        "Jangan flag bahwa pace belum tercapai. Evaluasi apakah latihan ini "
+        "berkontribusi ke arah goal tersebut (aerobic base, efisiensi, decoupling trend).\n\n"
+        "Focus: apakah tipe run ini executed dengan benar? Decoupling? Aerobic base progress? "
+        "Weekly load contribution? Be specific. Return ONLY valid JSON, no prose.\n\n"
         "## Training Goals\n{}\n\n"
         "## This Run\n{}"
-    ).format(days_into, goals_content, activity_summary)
+    ).format(zone_context, days_into, goals_content, activity_summary)
 
     try:
         response = claude_client.messages.create(
