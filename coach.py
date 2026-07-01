@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 from strava.auth import get_valid_token
 from strava.client import StravaClient
-from daily_review import generate_daily_review
+from daily_review import generate_daily_review, generate_nutrition_analysis
 from food_log import analyze_food
 from post_run import post_run_analysis
 from weekly_analysis import generate_weekly_analysis, generate_zone2_review
@@ -528,6 +528,25 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
         except Exception as e:
             await interaction.channel.send(f"❌ Daily review gagal: {e}")
 
+    @bot.tree.command(name="nutrition-review", description="Deep analysis nutrisi kemarin (d-1)")
+    @app_commands.describe(tanggal="Tanggal spesifik (YYYY-MM-DD), default kemarin")
+    async def nutrition_review_command(interaction: discord.Interaction, tanggal: str = None) -> None:
+        await interaction.response.send_message("Analyzing yesterday's nutrition...")
+        async with interaction.channel.typing():
+            try:
+                embed, analysis = await generate_nutrition_analysis(
+                    claude_client=claude, date_str=tanggal,
+                )
+                msg = await interaction.channel.send(embed=embed)
+                if analysis:
+                    thread = await msg.create_thread(name=f"Nutrition Review Detail — {embed.title.split('—')[-1].strip()}")
+                    for i in range(0, len(analysis), 4096):
+                        detail_embed = discord.Embed(description=analysis[i:i+4096], color=embed.color)
+                        await thread.send(embed=detail_embed)
+                    history[thread.id].append({"role": "assistant", "content": analysis})
+            except Exception as e:
+                await interaction.channel.send(f"❌ Nutrition review gagal: {e}")
+
     @tasks.loop(time=dt.time(hour=22, minute=0, tzinfo=timezone.utc))  # 05:00 WIB
     async def daily_review_task() -> None:
         channel = discord.utils.get(
@@ -540,8 +559,16 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
             return
         try:
             yesterday = (datetime.now(WIB) - timedelta(days=1)).strftime("%Y-%m-%d")
-            embed = await generate_daily_review(date_str=yesterday, claude_client=claude)
-            await channel.send(embed=embed)
+            embed, analysis = await generate_nutrition_analysis(
+                claude_client=claude, date_str=yesterday,
+            )
+            msg = await channel.send(embed=embed)
+            if analysis:
+                day_label = embed.title.split("—")[-1].strip()
+                thread = await msg.create_thread(name=f"Nutrition Review Detail — {day_label}")
+                for i in range(0, len(analysis), 4096):
+                    detail_embed = discord.Embed(description=analysis[i:i+4096], color=embed.color)
+                    await thread.send(embed=detail_embed)
         except Exception as e:
             print(f"Daily review auto-post failed: {e}")
 
