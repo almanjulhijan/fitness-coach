@@ -316,6 +316,49 @@ async def on_ready():
 
 # ── Chat (mention or DM) ───────────────────────────────────────────────────────
 
+def _strip_mention(text: str) -> str:
+    return text.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+
+
+async def build_channel_history(channel, before: discord.Message, limit: int = MAX_HISTORY) -> list[dict]:
+    """Backfill conversation context from Discord's own message history.
+
+    Works for regular channels, DMs, and threads alike (all are Messageable),
+    so a thread gets its own history rather than inheriting the parent
+    channel's, and context survives bot restarts since it's read straight
+    from Discord instead of an in-memory cache.
+    """
+    turns: list[tuple[str, str]] = []
+    try:
+        async for msg in channel.history(limit=limit * 2, before=before):
+            text = _strip_mention(msg.content)
+            if not text:
+                continue
+            if msg.author.bot:
+                turns.append(("assistant", text))
+            else:
+                turns.append(("user", f"{msg.author.display_name}: {text}"))
+    except discord.Forbidden:
+        return []
+
+    turns.reverse()  # chronological order
+
+    # Merge consecutive same-role turns (e.g. multiple users chatting between
+    # bot replies) since Claude requires strictly alternating user/assistant roles.
+    merged: list[dict] = []
+    for role, text in turns:
+        if merged and merged[-1]["role"] == role:
+            merged[-1]["content"] += "\n" + text
+        else:
+            merged.append({"role": role, "content": text})
+
+    # Claude requires the conversation to start with a "user" message
+    while merged and merged[0]["role"] != "user":
+        merged.pop(0)
+
+    return merged[-limit:]
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -327,12 +370,19 @@ async def on_message(message: discord.Message):
     if not is_dm and not is_mentioned:
         return
 
-    content = message.content.replace(f"<@{bot.user.id}>", "").strip()
+    content = _strip_mention(message.content)
     if not content:
         await message.reply("Hey! Mention me with a question about your training 🏃")
         return
 
     channel_id = message.channel.id
+
+    # First time seeing this channel/thread this session — backfill from
+    # Discord's actual message history so context carries over across bot
+    # restarts and includes messages the bot wasn't directly mentioned in.
+    if channel_id not in conversation_history:
+        conversation_history[channel_id] = await build_channel_history(message.channel, before=message)
+
     conversation_history[channel_id].append({"role": "user", "content": content})
 
     # Keep history bounded
