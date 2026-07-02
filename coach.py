@@ -488,8 +488,8 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
 
     weekly_category = os.getenv("WEEKLY_REVIEW_CATEGORY", "Running")
     weekly_channel  = os.getenv("WEEKLY_REVIEW_CHANNEL", "review")
-    daily_review_channel  = os.getenv("DAILY_REVIEW_CHANNEL", "review")
-    daily_review_category = os.getenv("DAILY_REVIEW_CATEGORY", "Running")
+    daily_review_channel  = os.getenv("DAILY_REVIEW_CHANNEL", "food-log")
+    daily_review_category = os.getenv("DAILY_REVIEW_CATEGORY", "")
 
     async def run_weekly_analysis(channel: discord.TextChannel, weeks_ago: int = 1) -> None:
         """Generate and post weekly analysis embed."""
@@ -582,13 +582,20 @@ async def run_bot(discord_token, client_id, client_secret, anthropic_key,
 
     @tasks.loop(time=dt.time(hour=22, minute=0, tzinfo=timezone.utc))  # 05:00 WIB
     async def daily_review_task() -> None:
-        channel = discord.utils.get(
-            bot.get_all_channels(),
-            name=daily_review_channel,
-            category__name=daily_review_category,
-        )
+        if daily_review_category:
+            channel = discord.utils.get(
+                bot.get_all_channels(),
+                name=daily_review_channel,
+                category__name=daily_review_category,
+            )
+        else:
+            channel = discord.utils.find(
+                lambda c: isinstance(c, discord.TextChannel) and c.name == daily_review_channel,
+                bot.get_all_channels(),
+            )
         if not channel:
-            print(f"⚠️ Channel #{daily_review_channel} in '{daily_review_category}' not found for daily recap.")
+            cat_hint = f" in '{daily_review_category}'" if daily_review_category else ""
+            print(f"⚠️ Channel #{daily_review_channel}{cat_hint} not found for daily recap.")
             return
         try:
             yesterday = (datetime.now(WIB) - timedelta(days=1)).strftime("%Y-%m-%d")
